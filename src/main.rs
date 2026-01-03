@@ -8,6 +8,5 @@ fn main() {
     io::stdout().flush().unwrap();
 
     io::stdin().read_line(&mut command).unwrap();
-    panic!("The method {} dosnt exist i think :)", command.trim());
-
+    println!("{}: command not found", command.trim())
 }
