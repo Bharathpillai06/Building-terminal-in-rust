@@ -32,9 +32,8 @@ fn main() {
         }
         
         if cmd == "pwd"{
-            let path = env::current_dir()?;
+            let path = env::current_dir().unwrap();
             println!("{}", path.display());
-            Ok(());
             continue;
 
         }
