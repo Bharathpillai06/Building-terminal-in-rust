@@ -66,6 +66,11 @@ fn main() {
             {
                 env::set_current_dir(parts[1]);
             }
+            else if parts[1] == "~"
+            {
+                env::set_current_dir("/home/user");
+            }
+
             else{
                 println!("cd: {}: No such file or directory",parts[1] );
             }
