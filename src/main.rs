@@ -16,6 +16,12 @@ fn main() {
     if command.trim() == "exit"{
         break;
     }
+    if &command.trim_left()[0..4] == "echo"{
+        println!("");
+        println!("{}",&command[4..]);
+        continue;
+        
+    }
     println!("{}: command not found", command.trim());
 
     }
