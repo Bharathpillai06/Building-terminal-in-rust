@@ -21,7 +21,21 @@ fn main() {
         continue;
         
     }
+    // shows command would be interpreted if it were used
+    if &command.trim_left()[0..4] == "type"{
+
+        match command[4..].trim_left(){
+
+            "echo" | "exit" | "type"=> {
+                println!("{}: is a shell builtin",  &command[4..].trim_left());
+            }
+             _ => {
+                println!("{}: not found",  &command[4..].trim_left());
+             }
+        } 
+    }
     println!("{}: command not found", command.trim());
 
     }
 }
+
