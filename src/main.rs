@@ -69,6 +69,8 @@ fn main() {
     }
 }
 
+
+
 // Searches PATH for an executable named `name`.
 // Returns the full path if found + executable.
 fn find_executable_in_path(name: &str) -> Option<std::path::PathBuf> {
