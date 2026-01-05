@@ -12,7 +12,6 @@ fn main() {
         print!("$ ");
         io::stdout().flush().unwrap();
 
-        // Exit on EOF
         if io::stdin().read_line(&mut input).unwrap() == 0 {
             break;
         }
@@ -22,30 +21,37 @@ fn main() {
             continue;
         }
 
-       // Split into tokens: command + args (supports single quotes)
-let parts: Vec<String> = {
-    let mut args: Vec<String> = Vec::new();
-    let mut current = String::new();
-    let mut in_single = false;
+       // Split into tokens: command + args (supports single quotes after forever :p )
+    let parts: Vec<String> = 
+    {
+        let mut args: Vec<String> = Vec::new();
+        let mut current = String::new();
+        let mut in_single = false;
+        let quote = ['\'', '\"'];
 
-    for ch in line.chars() {
-        if ch == '\'' {
-            in_single = !in_single;
-            continue;
-        }
 
-        if !in_single && ch.is_whitespace() {
-            if !current.is_empty() {
-                args.push(current);
-                current = String::new();
+        for ch in line.chars() 
+        {
+            if quote.contains(&ch)
+            {
+                in_single = !in_single;
+                continue;
             }
-            continue;
-        }
 
-        current.push(ch);
+            if !in_single && ch.is_whitespace() 
+            {
+                if !current.is_empty() 
+                {
+                    args.push(current);
+                    current = String::new();
+                }
+                continue;
+            }
+            current.push(ch);
     }
 
-    if !current.is_empty() {
+    if !current.is_empty() 
+    {
         args.push(current);
     }
 
