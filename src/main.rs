@@ -84,7 +84,6 @@ fn main() {
                 }
                 continue;
             }
-            }
             else if dir_exists(args[0])
             {
                 env::set_current_dir(args[0]);
