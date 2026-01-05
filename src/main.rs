@@ -17,7 +17,7 @@ fn main() {
         break;
     }
     if &command.trim_left()[0..4] == "echo"{
-        println!("{}",&command[4..]);
+        println!("{}",&command[4..].trim_left());
         continue;
         
     }
