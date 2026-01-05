@@ -10,22 +10,22 @@ fn main() {
     io::stdout().flush().unwrap();
     
     io::stdin().read_line(&mut command).unwrap();
-    command.trim_end();
+    let line = command.trim_end();
 
-    if command.is_empty(){
+    if line.is_empty(){
         continue;
     } 
-    if command.trim() == "exit"{
+    if line.trim() == "exit"{
         break;
     }
-    if command.starts_with("echo"){
+    if line.starts_with("echo"){
         println!("{}",&command[4..].trim_left());
         continue;
         
     }
     // shows command would be interpreted if it were used
-    if command.starts_with("type"){
-        let arg = command[4..].trim_start();
+    if line.starts_with("type"){
+        let arg = line[4..].trim_start();
         match arg{
 
             "echo" | "exit" | "type"=> {
@@ -37,7 +37,7 @@ fn main() {
         } 
         continue;
     }
-    println!("{}: command not found", command.trim());
+    println!("{}: command not found", line.trim());
 
     }
 }
