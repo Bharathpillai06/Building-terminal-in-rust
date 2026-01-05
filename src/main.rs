@@ -59,6 +59,32 @@ fn main() {
         continue;
 
     }
+
+
+
+if let Some(paths) = env::var_os("PATH") {
+        let args: Vec<&str> = line.split_whitespace().collect();
+
+        for dir in env::split_paths(&paths) 
+        {
+            let candidate = dir.join(args[0]);
+
+            if candidate.is_file() && candidate.is_executable()
+            {
+                println!("Program was passed {} args (including program name)." ,args.len());
+                println!("Arg #0 (program name): {} ",candidate.display());
+                let mut i =1;
+                while i < args.len() -1{
+                    println!("Arg #{}: {}",i , args[i]);
+                    i = i+1;
+                }
+                break;
+            }
+        }
+        continue;
+    }
+
+
     println!("{}: command not found", line.trim());
 
 
