@@ -61,18 +61,36 @@ fn main() {
         }
 
 
-        if cmd == "cd"{
-            if dir_exists(parts[1])
+        if cmd == "cd" 
+        {
+        
+            if args.is_empty() 
             {
-                env::set_current_dir(parts[1]);
-            }
-            else if parts[1] == "~"
-            {
-                env::set_current_dir("/home/user");
+                continue;
             }
 
+            if args[0] == "~"
+            {
+                match env::home_dir() 
+                {
+                    Some(home) => 
+                    {
+                        if env::set_current_dir(&home).is_err() 
+                        {
+                            println!("cd: ~: No such file or directory");
+                        }
+                    }
+                    None => println!("cd: ~: No such file or directory"),
+                }
+                continue;
+            }
+            }
+            else if dir_exists(args[0])
+            {
+                env::set_current_dir(args[0]);
+            }
             else{
-                println!("cd: {}: No such file or directory",parts[1] );
+                println!("cd: {}: No such file or directory",args[0] );
             }
             continue;
         }
