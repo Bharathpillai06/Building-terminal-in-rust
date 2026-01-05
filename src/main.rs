@@ -69,6 +69,7 @@ fn main() {
             else{
                 println!("cd: {}: No such file or directory",parts[1] );
             }
+            continue;
         }
 
         // External programs
