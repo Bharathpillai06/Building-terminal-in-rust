@@ -19,7 +19,7 @@ fn main() {
         break;
     }
     if line.starts_with("echo"){
-        println!("{}",&command[4..].trim_left());
+        println!("{}",&command[4..].trim_start());
         continue;
         
     }
