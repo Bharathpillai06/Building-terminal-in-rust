@@ -8,8 +8,10 @@ fn main() {
     let mut command = String::new();
     print!("$ ");
     io::stdout().flush().unwrap();
-
+    
     io::stdin().read_line(&mut command).unwrap();
+    command.trim_end();
+
     if command.is_empty(){
         continue;
     } 
@@ -17,7 +19,7 @@ fn main() {
         break;
     }
     if command.starts_with("echo"){
-        print!("{}",&command[4..].trim_left());
+        println!("{}",&command[4..].trim_left());
         continue;
         
     }
@@ -27,10 +29,10 @@ fn main() {
         match arg{
 
             "echo" | "exit" | "type"=> {
-                print!("{}: is a shell builtin",  arg);
+                println!("{}: is a shell builtin",  arg);
             }
              _ => {
-                print!("{}: not found",  arg);
+                println!("{}: not found",  arg);
              }
         } 
         continue;
