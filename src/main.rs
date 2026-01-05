@@ -23,11 +23,11 @@ fn main() {
     }
     // shows command would be interpreted if it were used
     if command.starts_with("type"){
-
-        match command[4..].trim_left(){
+        let arg = command[4..].trim_start();
+        match arg{
 
             "echo" | "exit" | "type"=> {
-                println!("{}: is a shell builtin",  &command[4..].trim_left());
+                println!("{}: is a shell builtin",  arg);
             }
              _ => {
                 println!("{}: not found",  &command[4..].trim_left());
