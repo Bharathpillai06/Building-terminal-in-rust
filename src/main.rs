@@ -72,7 +72,7 @@ if let Some(paths) = env::var_os("PATH") {
             if candidate.is_file() && candidate.is_executable()
             {
                 println!("Program was passed {} args (including program name)." ,args.len());
-                println!("Arg #0 (program name): {} ",candidate.display());
+                println!("Arg #0 (program name): {} ",args[0]);
                 let mut i =1;
                 while i < args.len() -1{
                     println!("Arg #{}: {}",i , args[i]);
