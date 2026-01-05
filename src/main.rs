@@ -19,7 +19,7 @@ fn main() {
         break;
     }
     if line.starts_with("echo"){
-        println!("{}",&command[4..].trim_start());
+        print!("{}",&command[4..].trim_start());
         continue;
         
     }
@@ -29,15 +29,15 @@ fn main() {
         match arg{
 
             "echo" | "exit" | "type"=> {
-                println!("{} is a shell builtin",  arg);
+                print!("{} is a shell builtin",  arg);
             }
              _ => {
-                println!("{} not found",  arg);
+                print!("{} not found",  arg);
              }
         } 
         continue;
     }
-    println!("{}: command not found", line.trim());
+    print!("{}: command not found", line.trim());
 
     }
 }
