@@ -74,7 +74,7 @@ if let Some(paths) = env::var_os("PATH") {
                 println!("Program was passed {} args (including program name)." ,args.len());
                 println!("Arg #0 (program name): {} ",args[0]);
                 let mut i =1;
-                while i < args.len() -1{
+                while i < args.len() {
                     println!("Arg #{}: {}",i , args[i]);
                     i = i+1;
                 }
