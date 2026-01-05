@@ -22,10 +22,40 @@ fn main() {
             continue;
         }
 
-        // Split into tokens: command + args
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        let cmd = parts[0];
-        let args = &parts[1..];
+       // Split into tokens: command + args (supports single quotes)
+let parts: Vec<String> = {
+    let mut args: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut in_single = false;
+
+    for ch in line.chars() {
+        if ch == '\'' {
+            in_single = !in_single;
+            continue;
+        }
+
+        if !in_single && ch.is_whitespace() {
+            if !current.is_empty() {
+                args.push(current);
+                current = String::new();
+            }
+            continue;
+        }
+
+        current.push(ch);
+    }
+
+    if !current.is_empty() {
+        args.push(current);
+    }
+
+    args
+};
+
+
+let cmd = parts[0].as_str();
+let args: Vec<&str> = parts[1..].iter().map(|s| s.as_str()).collect();
+
 
         // Builtins
         if cmd == "exit" {
@@ -97,7 +127,7 @@ fn main() {
         // External programs
         if let Some(full_path) = find_executable_in_path(cmd) {
             // Run the program and let it print to stdout/stderr normally
-            let status = Command::new(parts[0])
+            let status = Command::new(&parts[0])
                 .args(args)
                 .status();
 
