@@ -55,15 +55,13 @@ fn main() {
         // External programs
         if let Some(full_path) = find_executable_in_path(cmd) {
             // Run the program and let it print to stdout/stderr normally
-            let status = Command::new(full_path)
+            let status = Command::new(parts[0])
                 .args(args)
                 .status();
 
-            // If execution fails (rare), treat as not found-ish
-            if status.is_err() {
-                println!("{cmd}: command not found");
-            }
-        } else {
+            
+        } 
+        else {
             println!("{cmd}: command not found");
         }
     }
