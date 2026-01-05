@@ -30,6 +30,10 @@ fn main() {
         if cmd == "exit" {
             break;
         }
+        
+        if cmd == "pwd"{
+            let paths = env::var_os("PATH")?;
+        }
 
         if cmd == "echo" {
             println!("{}", args.join(" "));
@@ -38,7 +42,7 @@ fn main() {
 
         if cmd == "type" {
             let target = args[0];
-            let builtins = ["exit", "echo", "type"];
+            let builtins = ["exit", "echo", "type", "pwd"];
             if builtins.contains(&target) {
                 println!("{target} is a shell builtin");
                 continue;
@@ -64,6 +68,8 @@ fn main() {
         else {
             println!("{cmd}: command not found");
         }
+
+
     }
 }
 
