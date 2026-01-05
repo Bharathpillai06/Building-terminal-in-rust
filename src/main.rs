@@ -22,36 +22,35 @@ fn main() {
         }
 
        // Split into tokens: command + args (supports single quotes after forever :p )
-    let parts: Vec<String> = 
-    {
-        let mut args: Vec<String> = Vec::new();
-        let mut current = String::new();
-        let mut in_single = false;
-        let quote = ['\'', '\"'];
+    let parts: Vec<String> = {
+    let mut args: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut in_single = false;
+    let mut in_double = false;
 
+    for ch in line.chars() {
+        if ch == '\'' && !in_double {
+            in_single = !in_single;
+            continue;
+        }
 
-        for ch in line.chars() 
-        {
-            if quote.contains(&ch)
-            {
-                in_single = !in_single;
-                continue;
+        if ch == '"' && !in_single {
+            in_double = !in_double;
+            continue;
+        }
+
+        if !in_single && !in_double && ch.is_whitespace() {
+            if !current.is_empty() {
+                args.push(current);
+                current = String::new();
             }
+            continue;
+        }
 
-            if !in_single && ch.is_whitespace() 
-            {
-                if !current.is_empty() 
-                {
-                    args.push(current);
-                    current = String::new();
-                }
-                continue;
-            }
-            current.push(ch);
+        current.push(ch);
     }
 
-    if !current.is_empty() 
-    {
+    if !current.is_empty() {
         args.push(current);
     }
 
