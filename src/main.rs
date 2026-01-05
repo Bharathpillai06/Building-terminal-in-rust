@@ -16,13 +16,13 @@ fn main() {
     if command.trim() == "exit"{
         break;
     }
-    if &command.trim_left()[0..4] == "echo"{
+    if command.starts_with("echo"){
         print!("{}",&command[4..].trim_left());
         continue;
         
     }
     // shows command would be interpreted if it were used
-    if &command.trim_left()[0..4] == "type"{
+    if command.starts_with("type"){
 
         match command[4..].trim_left(){
 
