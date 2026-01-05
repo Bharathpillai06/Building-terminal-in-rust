@@ -29,10 +29,10 @@ fn main() {
         match arg{
 
             "echo" | "exit" | "type"=> {
-                println!("{}: is a shell builtin",  arg);
+                println!("{} is a shell builtin",  arg);
             }
              _ => {
-                println!("{}: not found",  arg);
+                println!("{} not found",  arg);
              }
         } 
         continue;
