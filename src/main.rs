@@ -1,5 +1,7 @@
 #[allow(unused_imports)]
 use std::io::{self, Write};
+use is_executable::IsExecutable;
+use std::env;
 
 fn main() {
     // TODO: Uncomment the code below to pass the first stage
@@ -23,21 +25,42 @@ fn main() {
         continue;
         
     }
-    // shows command would be interpreted if it were used
+    // shows command would be interpreted if it were used and Locate executable files using path
     if line.starts_with("type"){
         let arg = line[4..].trim_start();
-        match arg{
+        let valid_options = ["exit", "type", "echo"];
 
-            "echo" | "exit" | "type"=> {
-                println!("{} is a shell builtin",  arg);
+        if valid_options.contains(&arg){
+           println!("{} is a shell builtin",  arg);
+           continue;
+        }
+
+
+        let mut found = false;
+
+        if let Some(paths) = env::var_os("PATH") {
+            for dir in env::split_paths(&paths) 
+            {
+                let candidate = dir.join(arg);
+
+                if candidate.is_file() && candidate.is_executable()
+                {
+                    println!("{arg} is {}", candidate.display());
+                    found = true;
+                    break;
+                }
             }
-             _ => {
-                println!("{} not found",  arg);
-             }
-        } 
+        }
+        if !found 
+        {
+        println!("{arg} not found");
+        }
+
         continue;
+
     }
     println!("{}: command not found", line.trim());
+
 
     }
 }
