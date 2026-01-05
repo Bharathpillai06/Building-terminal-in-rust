@@ -3,6 +3,7 @@ use std::io::{self, Write};
 use std::env;
 use std::process::Command;
 use is_executable::IsExecutable;
+use std::path::Path;
 
 fn main() {
     loop {
@@ -59,6 +60,17 @@ fn main() {
             continue;
         }
 
+
+        if cmd == "cd"{
+            if dir_exists(parts[1])
+            {
+                env::set_current_dir(parts[1]);
+            }
+            else{
+                println!("cd: {}: No such file or directory",parts[1] );
+            }
+        }
+
         // External programs
         if let Some(full_path) = find_executable_in_path(cmd) {
             // Run the program and let it print to stdout/stderr normally
@@ -90,4 +102,10 @@ fn find_executable_in_path(name: &str) -> Option<std::path::PathBuf> {
         }
     }
     None
+}
+
+
+fn dir_exists(p: &str) -> bool {
+    let path = Path::new(p);
+    path.is_dir()
 }
