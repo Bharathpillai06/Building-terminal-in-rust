@@ -13,10 +13,7 @@ fn main() {
     if command.is_empty(){
         continue;
     } 
-    if command == "exit"{
-        break;
-    }
-    else if command == " exit"{
+    if command.trim() == "exit"{
         break;
     }
     println!("{}: command not found", command.trim());
