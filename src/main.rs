@@ -27,12 +27,13 @@ fn main() {
         match arg{
 
             "echo" | "exit" | "type"=> {
-                println!("{}: is a shell builtin",  arg);
+                print!("{}: is a shell builtin",  arg);
             }
              _ => {
-                println!("{}: not found",  &command[4..].trim_left());
+                print!("{}: not found",  arg);
              }
         } 
+        continue;
     }
     println!("{}: command not found", command.trim());
 
