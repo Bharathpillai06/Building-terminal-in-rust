@@ -32,7 +32,7 @@ fn main() {
         }
         
         if cmd == "pwd"{
-            let paths = env::var_os("PATH")?;
+            let paths = env::var_os("PATH");
         }
 
         if cmd == "echo" {
