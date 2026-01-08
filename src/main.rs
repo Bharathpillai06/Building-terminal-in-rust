@@ -28,13 +28,21 @@ fn main() {
     let mut in_single = false;
     let mut in_double = false;
     let mut backslash = false;
-
+    let special_char = ["\'", "\\", "$", "\""]; 
     for ch in line.chars() {
-        if backslash == true{
+        if backslash == true && !in_double {
 
              current.push(ch);
              backslash =false;
              continue;
+        }
+        if backslash == true && in_double {
+            if special_char.contains(current)
+            {
+             current.push(ch);
+             backslash =false;
+             continue;
+            }
         }
         if ch == '\'' && !in_double {
             in_single = !in_single;
