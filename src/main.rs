@@ -28,7 +28,7 @@ fn main() {
     let mut in_single = false;
     let mut in_double = false;
     let mut backslash = false;
-    let special_char = ["\'", "\\", "$", "\""]; 
+    let special_char = ['\'', '\\', '$', '\"']; 
     for ch in line.chars() {
         if backslash == true && !in_double {
 
@@ -37,7 +37,7 @@ fn main() {
              continue;
         }
         if backslash == true && in_double {
-            if special_char.contains(current)
+            if special_char.contains(&ch)
             {
              current.push(ch);
              backslash =false;
