@@ -61,7 +61,7 @@ fn main() {
             }
             continue;
         }
-        if !in_double && !in_single && ch ==  '\\'
+        if  !in_single && ch ==  '\\'
         {
             backslash = true;
             continue
