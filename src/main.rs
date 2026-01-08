@@ -1,6 +1,7 @@
 #[allow(unused_imports)]
 use std::io::{self, Write};
 use std::env;
+use std::ops::Index;
 use std::process::Command;
 use is_executable::IsExecutable;
 use std::path::Path;
@@ -29,6 +30,7 @@ fn main() {
     let mut in_double = false;
     let mut backslash = false;
     let special_char = ['\'', '\\', '$', '\"']; 
+    let mut prioir = 's';
     for ch in line.chars() {
         if backslash == true && !in_double {
 
@@ -42,6 +44,13 @@ fn main() {
              current.push(ch);
              backslash =false;
              continue;
+            }
+            else{
+                current.push(prioir);
+                current.push(ch);
+             backslash =false;
+             continue;
+
             }
         }
         if ch == '\'' && !in_double {
@@ -66,6 +75,13 @@ fn main() {
             backslash = true;
             continue
         }
+                if  in_double && !in_single && ch ==  '\\'
+        {
+            backslash = true;
+            prioir = ch;
+            continue
+        }
+
 
         current.push(ch);
     }
