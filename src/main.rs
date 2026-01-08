@@ -30,41 +30,52 @@ fn main() {
             let mut in_double = false;
             let mut backslash = false;
 
-            // In double quotes, backslash only escapes: \ $ ' "
-            let special_char = ['\'', '\\', '$', '\"'];
+            // In double quotes, backslash only escapes: \ " $ `
+            // (NOT single quote)
+            let dq_escapable = ['\\', '"', '$', '`'];
 
             for ch in line.chars() {
-                // If previous char was backslash, decide what to do with current char
+                // Handle the character after a backslash
                 if backslash {
-                    if in_double {
-                        // In double quotes: only escape special chars; otherwise keep the backslash
-                        if special_char.contains(&ch) {
+                    if in_single {
+                        // Backslash is literal inside single quotes
+                        current.push('\\');
+                        current.push(ch);
+                    } else if in_double {
+                        // In double quotes, backslash only escapes specific chars
+                        if dq_escapable.contains(&ch) {
                             current.push(ch);
                         } else {
+                            // Otherwise keep the backslash literally
                             current.push('\\');
                             current.push(ch);
                         }
                     } else {
-                        // Outside double quotes: backslash escapes the next char
+                        // Outside quotes, backslash escapes the next char
                         current.push(ch);
                     }
+
                     backslash = false;
                     continue;
                 }
 
-                // Toggle single quotes (only when not inside double quotes)
+                // Start an escape sequence (allowed everywhere except inside single quotes)
+                if ch == '\\' && !in_single {
+                    backslash = true;
+                    continue;
+                }
+
+                // Toggle quotes (only if we're not inside the other quote type)
                 if ch == '\'' && !in_double {
                     in_single = !in_single;
                     continue;
                 }
-
-                // Toggle double quotes (only when not inside single quotes)
                 if ch == '"' && !in_single {
                     in_double = !in_double;
                     continue;
                 }
 
-                // Token boundary on whitespace (only when not inside quotes)
+                // Whitespace splits args only when not in quotes
                 if !in_single && !in_double && ch.is_whitespace() {
                     if !current.is_empty() {
                         args.push(current);
@@ -73,16 +84,10 @@ fn main() {
                     continue;
                 }
 
-                // Start an escape sequence (but NOT inside single quotes)
-                if !in_single && ch == '\\' {
-                    backslash = true;
-                    continue;
-                }
-
                 current.push(ch);
             }
 
-            // If line ends with a dangling backslash, keep it literal
+            // If input ends with a dangling backslash, keep it literal
             if backslash {
                 current.push('\\');
             }
