@@ -27,8 +27,15 @@ fn main() {
     let mut current = String::new();
     let mut in_single = false;
     let mut in_double = false;
+    let mut backslash = false;
 
     for ch in line.chars() {
+        if backslash == true{
+
+             current.push(ch);
+             backslash =false;
+             continue;
+        }
         if ch == '\'' && !in_double {
             in_single = !in_single;
             continue;
@@ -45,6 +52,11 @@ fn main() {
                 current = String::new();
             }
             continue;
+        }
+        if !in_double && !in_single && ch ==  '\\'
+        {
+            backslash = true;
+            continue
         }
 
         current.push(ch);
@@ -129,9 +141,8 @@ let args: Vec<&str> = parts[1..].iter().map(|s| s.as_str()).collect();
             continue;
         }
 
-        // External programs
+        // External  executable programs
         if let Some(full_path) = find_executable_in_path(cmd) {
-            // Run the program and let it print to stdout/stderr normally
             let status = Command::new(&parts[0])
                 .args(args)
                 .status();
@@ -148,8 +159,7 @@ let args: Vec<&str> = parts[1..].iter().map(|s| s.as_str()).collect();
 
 
 
-// Searches PATH for an executable named `name`.
-// Returns the full path if found + executable.
+
 fn find_executable_in_path(name: &str) -> Option<std::path::PathBuf> {
     let paths = env::var_os("PATH")?;
 
