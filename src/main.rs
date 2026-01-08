@@ -1,7 +1,6 @@
 #[allow(unused_imports)]
 use std::io::{self, Write};
 use std::env;
-use std::ops::Index;
 use std::process::Command;
 use is_executable::IsExecutable;
 use std::path::Path;
@@ -22,92 +21,91 @@ fn main() {
             continue;
         }
 
-       // Split into tokens: command + args (supports single quotes after forever :p )
-    let parts: Vec<String> = {
-    let mut args: Vec<String> = Vec::new();
-    let mut current = String::new();
-    let mut in_single = false;
-    let mut in_double = false;
-    let mut backslash = false;
-    let special_char = ['\'', '\\', '$', '\"']; 
-    let mut prioir = 's';
-    for ch in line.chars() {
-        if backslash == true && !in_double {
+        // Split into tokens: command + args (supports quotes + backslash escaping)
+        let parts: Vec<String> = {
+            let mut args: Vec<String> = Vec::new();
+            let mut current = String::new();
 
-             current.push(ch);
-             backslash =false;
-             continue;
-        }
-        if backslash == true && in_double {
-            if special_char.contains(&ch)
-            {
-             current.push(ch);
-             backslash =false;
-             continue;
-            }
-            else{
-                current.push(prioir);
+            let mut in_single = false;
+            let mut in_double = false;
+            let mut backslash = false;
+
+            // In double quotes, backslash only escapes: \ $ ' "
+            let special_char = ['\'', '\\', '$', '\"'];
+
+            for ch in line.chars() {
+                // If previous char was backslash, decide what to do with current char
+                if backslash {
+                    if in_double {
+                        // In double quotes: only escape special chars; otherwise keep the backslash
+                        if special_char.contains(&ch) {
+                            current.push(ch);
+                        } else {
+                            current.push('\\');
+                            current.push(ch);
+                        }
+                    } else {
+                        // Outside double quotes: backslash escapes the next char
+                        current.push(ch);
+                    }
+                    backslash = false;
+                    continue;
+                }
+
+                // Toggle single quotes (only when not inside double quotes)
+                if ch == '\'' && !in_double {
+                    in_single = !in_single;
+                    continue;
+                }
+
+                // Toggle double quotes (only when not inside single quotes)
+                if ch == '"' && !in_single {
+                    in_double = !in_double;
+                    continue;
+                }
+
+                // Token boundary on whitespace (only when not inside quotes)
+                if !in_single && !in_double && ch.is_whitespace() {
+                    if !current.is_empty() {
+                        args.push(current);
+                        current = String::new();
+                    }
+                    continue;
+                }
+
+                // Start an escape sequence (but NOT inside single quotes)
+                if !in_single && ch == '\\' {
+                    backslash = true;
+                    continue;
+                }
+
                 current.push(ch);
-             backslash =false;
-             continue;
-
             }
-        }
-        if ch == '\'' && !in_double {
-            in_single = !in_single;
-            continue;
-        }
 
-        if ch == '"' && !in_single {
-            in_double = !in_double;
-            continue;
-        }
+            // If line ends with a dangling backslash, keep it literal
+            if backslash {
+                current.push('\\');
+            }
 
-        if !in_single && !in_double && ch.is_whitespace() {
             if !current.is_empty() {
                 args.push(current);
-                current = String::new();
             }
-            continue;
-        }
-        if  !in_single && ch ==  '\\'
-        {
-            backslash = true;
-            continue
-        }
-                if  in_double && !in_single && ch ==  '\\'
-        {
-            backslash = true;
-            prioir = ch;
-            continue
-        }
 
+            args
+        };
 
-        current.push(ch);
-    }
-
-    if !current.is_empty() {
-        args.push(current);
-    }
-
-    args
-};
-
-
-let cmd = parts[0].as_str();
-let args: Vec<&str> = parts[1..].iter().map(|s| s.as_str()).collect();
-
+        let cmd = parts[0].as_str();
+        let args: Vec<&str> = parts[1..].iter().map(|s| s.as_str()).collect();
 
         // Builtins
         if cmd == "exit" {
             break;
         }
-        
-        if cmd == "pwd"{
+
+        if cmd == "pwd" {
             let path = env::current_dir().unwrap();
             println!("{}", path.display());
             continue;
-
         }
 
         if cmd == "echo" {
@@ -117,7 +115,7 @@ let args: Vec<&str> = parts[1..].iter().map(|s| s.as_str()).collect();
 
         if cmd == "type" {
             let target = args[0];
-            let builtins = ["exit", "echo", "type", "pwd"];
+            let builtins = ["exit", "echo", "type", "pwd", "cd"];
             if builtins.contains(&target) {
                 println!("{target} is a shell builtin");
                 continue;
@@ -131,58 +129,39 @@ let args: Vec<&str> = parts[1..].iter().map(|s| s.as_str()).collect();
             continue;
         }
 
-
-        if cmd == "cd" 
-        {
-        
-            if args.is_empty() 
-            {
+        if cmd == "cd" {
+            if args.is_empty() {
                 continue;
             }
 
-            if args[0] == "~"
-            {
-                match env::home_dir() 
-                {
-                    Some(home) => 
-                    {
-                        if env::set_current_dir(&home).is_err() 
-                        {
+            if args[0] == "~" {
+                match env::home_dir() {
+                    Some(home) => {
+                        if env::set_current_dir(&home).is_err() {
                             println!("cd: ~: No such file or directory");
                         }
                     }
                     None => println!("cd: ~: No such file or directory"),
                 }
                 continue;
-            }
-            else if dir_exists(args[0])
-            {
-                env::set_current_dir(args[0]);
-            }
-            else{
-                println!("cd: {}: No such file or directory",args[0] );
+            } else if dir_exists(args[0]) {
+                if env::set_current_dir(args[0]).is_err() {
+                    println!("cd: {}: No such file or directory", args[0]);
+                }
+            } else {
+                println!("cd: {}: No such file or directory", args[0]);
             }
             continue;
         }
 
-        // External  executable programs
-        if let Some(full_path) = find_executable_in_path(cmd) {
-            let status = Command::new(&parts[0])
-                .args(args)
-                .status();
-
-            
-        } 
-        else {
+        // External executable programs
+        if let Some(_full_path) = find_executable_in_path(cmd) {
+            let _status = Command::new(&parts[0]).args(args).status();
+        } else {
             println!("{cmd}: command not found");
         }
-
-
     }
 }
-
-
-
 
 fn find_executable_in_path(name: &str) -> Option<std::path::PathBuf> {
     let paths = env::var_os("PATH")?;
@@ -195,7 +174,6 @@ fn find_executable_in_path(name: &str) -> Option<std::path::PathBuf> {
     }
     None
 }
-
 
 fn dir_exists(p: &str) -> bool {
     let path = Path::new(p);
