@@ -4,7 +4,9 @@ use std::env;
 use std::process::Command;
 use is_executable::IsExecutable;
 use std::path::Path;
-
+use std::fs;
+use std::fs::File;
+use std::process::Stdio;
 fn main() {
     loop {
         let mut input = String::new();
@@ -106,6 +108,31 @@ fn main() {
         if cmd == "exit" {
             break;
         }
+        
+        if let Some(index) = args.iter().position(|&x| x == ">"){
+
+       if index +1 >=args.len(){
+        eprintln!("cat: nonexistent: No such file or directory");
+        continue;
+       }
+        let outfile = args[index + 1];
+        let input = &args[..index];
+
+        let file = File::create(outfile)
+        .expect("failed to create output file");
+
+
+       let status = Command::new(cmd)
+        .args(input)
+        .stdout(Stdio::from(file))
+        .status();
+
+    if let Err(e) = status {
+        eprintln!("{cmd}: {e}");
+    }
+
+    continue;
+}
 
         if cmd == "pwd" {
             let path = env::current_dir().unwrap();
