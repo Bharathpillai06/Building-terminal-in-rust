@@ -4,7 +4,6 @@ use std::env;
 use std::process::Command;
 use is_executable::IsExecutable;
 use std::path::Path;
-use std::fs;
 use std::fs::File;
 use std::process::Stdio;
 fn main() {
@@ -109,7 +108,7 @@ fn main() {
             break;
         }
         
-        if let Some(index) = args.iter().position(|&x| x == ">"){
+        if let Some(index) = args.iter().position(|&x| x == ">" || x == "1>" ){
 
        if index +1 >=args.len(){
         eprintln!("cat: nonexistent: No such file or directory");
@@ -117,7 +116,16 @@ fn main() {
        }
         let outfile = args[index + 1];
         let input = &args[..index];
-
+        
+        if cmd == "echo" 
+        {
+            let out = input.join(" ");
+            if let Err(e) = std::fs::write(outfile, out + "\n") 
+            {
+                eprintln!("echo: {e}");
+            }
+            continue;
+        }
         let file = File::create(outfile)
         .expect("failed to create output file");
 
