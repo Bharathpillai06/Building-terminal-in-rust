@@ -1,11 +1,10 @@
 #[allow(unused_imports)]
 use std::io::{self, Write};
 use std::env;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use is_executable::IsExecutable;
 use std::path::Path;
 use std::fs::File;
-use std::process::Stdio;
 
 fn main() {
     loop {
@@ -23,15 +22,13 @@ fn main() {
             continue;
         }
 
-        // Split into tokens: command + args (supports quotes + backslash escaping)
+        // ---------- tokenization ----------
         let parts: Vec<String> = {
-            let mut args: Vec<String> = Vec::new();
+            let mut args = Vec::new();
             let mut current = String::new();
-
             let mut in_single = false;
             let mut in_double = false;
             let mut backslash = false;
-
             let dq_escapable = ['\\', '"', '$', '`'];
 
             for ch in line.chars() {
@@ -81,7 +78,6 @@ fn main() {
             if backslash {
                 current.push('\\');
             }
-
             if !current.is_empty() {
                 args.push(current);
             }
@@ -90,13 +86,11 @@ fn main() {
         };
 
         let cmd = parts[0].as_str();
-
         if cmd == "exit" {
             break;
         }
 
-        // ---------- NEW: parse redirections ----------
-        // We treat redirections as shell syntax, not program arguments.
+        // ---------- parse redirections ----------
         let mut clean_args: Vec<String> = Vec::new();
         let mut stdout_path: Option<String> = None;
         let mut stderr_path: Option<String> = None;
@@ -106,7 +100,7 @@ fn main() {
             match parts[i].as_str() {
                 ">" | "1>" => {
                     if i + 1 >= parts.len() {
-                        eprintln!("{cmd}: syntax error near unexpected token `newline`");
+                        eprintln!("{cmd}: syntax error");
                         clean_args.clear();
                         break;
                     }
@@ -115,7 +109,7 @@ fn main() {
                 }
                 "2>" => {
                     if i + 1 >= parts.len() {
-                        eprintln!("{cmd}: syntax error near unexpected token `newline`");
+                        eprintln!("{cmd}: syntax error");
                         clean_args.clear();
                         break;
                     }
@@ -129,14 +123,8 @@ fn main() {
             }
         }
 
-        if clean_args.is_empty() && (stdout_path.is_some() || stderr_path.is_some()) {
-            // malformed redirection handled above
-            continue;
-        }
-
-        // Create stderr file if requested (even if nothing is written)
-        // This matches the tester: `echo hello 2> file` must create/truncate file.
-        let mut stderr_file_for_builtins: Option<File> = match &stderr_path {
+        // create stderr file early (even if unused)
+        let mut stderr_file: Option<File> = match &stderr_path {
             Some(p) => match File::create(p) {
                 Ok(f) => Some(f),
                 Err(e) => {
@@ -147,9 +135,8 @@ fn main() {
             None => None,
         };
 
-        // Helper: write errors either to redirected stderr file or real stderr
         let mut write_err = |msg: &str| {
-            if let Some(f) = stderr_file_for_builtins.as_mut() {
+            if let Some(f) = stderr_file.as_mut() {
                 let _ = f.write_all(msg.as_bytes());
             } else {
                 eprint!("{msg}");
@@ -159,14 +146,21 @@ fn main() {
         // ---------- builtins ----------
         if cmd == "pwd" {
             match env::current_dir() {
-                Ok(path) => println!("{}", path.display()),
+                Ok(p) => println!("{}", p.display()),
                 Err(e) => write_err(&format!("pwd: {e}\n")),
             }
             continue;
         }
 
         if cmd == "echo" {
-            println!("{}", clean_args.join(" "));
+            let out = clean_args.join(" ");
+            if let Some(p) = &stdout_path {
+                if let Err(e) = std::fs::write(p, format!("{out}\n")) {
+                    write_err(&format!("echo: {e}\n"));
+                }
+            } else {
+                println!("{out}");
+            }
             continue;
         }
 
@@ -179,11 +173,8 @@ fn main() {
             let builtins = ["exit", "echo", "type", "pwd", "cd"];
             if builtins.contains(&target) {
                 println!("{target} is a shell builtin");
-                continue;
-            }
-
-            if let Some(full_path) = find_executable_in_path(target) {
-                println!("{target} is {}", full_path.display());
+            } else if let Some(p) = find_executable_in_path(target) {
+                println!("{target} is {}", p.display());
             } else {
                 println!("{target} not found");
             }
@@ -194,12 +185,10 @@ fn main() {
             if clean_args.is_empty() {
                 continue;
             }
-
             let dest = clean_args[0].as_str();
-
-            let target_path = if dest == "~" {
+            let target = if dest == "~" {
                 match env::home_dir() {
-                    Some(home) => home,
+                    Some(h) => h,
                     None => {
                         write_err("cd: ~: No such file or directory\n");
                         continue;
@@ -209,18 +198,17 @@ fn main() {
                 Path::new(dest).to_path_buf()
             };
 
-            if env::set_current_dir(&target_path).is_err() {
+            if env::set_current_dir(&target).is_err() {
                 write_err(&format!("cd: {}: No such file or directory\n", dest));
             }
             continue;
         }
 
-        // ---------- external programs ----------
+        // ---------- external commands ----------
         if find_executable_in_path(cmd).is_some() {
             let mut command = Command::new(cmd);
             command.args(clean_args.iter());
 
-            // stdout redirect (existing feature)
             if let Some(p) = &stdout_path {
                 match File::create(p) {
                     Ok(f) => {
@@ -233,14 +221,12 @@ fn main() {
                 }
             }
 
-            // stderr redirect (NEW feature)
             if let Some(p) = &stderr_path {
                 match File::create(p) {
                     Ok(f) => {
                         command.stderr(Stdio::from(f));
                     }
                     Err(e) => {
-                        // if we can't open the stderr file, error goes to real stderr (or builtin redirect)
                         write_err(&format!("{cmd}: {e}\n"));
                         continue;
                     }
@@ -248,7 +234,6 @@ fn main() {
             }
 
             if let Err(e) = command.status() {
-                // this is an exec/spawn error from *your* shell, so respect 2> too
                 write_err(&format!("{cmd}: {e}\n"));
             }
         } else {
