@@ -1,7 +1,7 @@
 #[allow(unused_imports)]
 use std::env;
 use std::fs::{File, OpenOptions};
-use std::io::{self, Write};
+use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -10,10 +10,11 @@ use is_executable::IsExecutable;
 // ---------- rustyline for TAB completion ----------
 use rustyline::completion::{Completer, Pair};
 use rustyline::error::ReadlineError;
-use rustyline::hint::Hinter;
 use rustyline::highlight::Highlighter;
+use rustyline::hint::Hinter;
+use rustyline::history::DefaultHistory;
 use rustyline::validate::Validator;
-use rustyline::{Context, DefaultEditor, Helper};
+use rustyline::{Context, Editor, Helper};
 
 #[derive(Debug, Clone)]
 enum StdoutRedirect {
@@ -33,12 +34,14 @@ enum StderrRedirect {
 struct ShellHelper;
 
 impl Helper for ShellHelper {}
+
 impl Hinter for ShellHelper {
     type Hint = String;
     fn hint(&self, _line: &str, _pos: usize, _ctx: &Context<'_>) -> Option<Self::Hint> {
         None
     }
 }
+
 impl Highlighter for ShellHelper {}
 impl Validator for ShellHelper {}
 
@@ -91,8 +94,9 @@ impl Completer for ShellHelper {
 }
 
 fn main() {
-    // Use rustyline to support <TAB>
-    let mut rl = DefaultEditor::new().unwrap();
+    // IMPORTANT: Don't use DefaultEditor here, it fixes Helper type to ().
+    // We need Editor<ShellHelper, DefaultHistory> so set_helper accepts ShellHelper.
+    let mut rl: Editor<ShellHelper, DefaultHistory> = Editor::new().unwrap();
     rl.set_helper(Some(ShellHelper));
 
     loop {

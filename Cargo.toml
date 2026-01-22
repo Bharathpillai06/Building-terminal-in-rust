@@ -4,5 +4,5 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-is_executable = "1.0.4"
+is_executable = "1.0.5"
 rustyline = "17.0.2"
