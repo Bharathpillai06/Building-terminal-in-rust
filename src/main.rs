@@ -21,18 +21,18 @@ use rustyline::{Context, Editor, Helper};
 #[derive(Debug, Clone)]
 enum StdoutRedirect {
     Inherit,
-    Truncate(String), // > or 1>
-    Append(String),   // >> or 1>>
+    Truncate(String),
+    Append(String),
 }
 
 #[derive(Debug, Clone)]
 enum StderrRedirect {
     Inherit,
-    Truncate(String), // 2>
-    Append(String),   // 2>>
+    Truncate(String),
+    Append(String),
 }
 
-// State for "TAB then TAB" behavior
+// State for "<TAB><TAB>" listing behavior when ambiguous and no further LCP progress
 #[derive(Debug)]
 struct CompletionState {
     last_prefix: Option<String>,
@@ -64,95 +64,7 @@ impl Hinter for ShellHelper {
 impl Highlighter for ShellHelper {}
 impl Validator for ShellHelper {}
 
-impl Completer for ShellHelper {
-    type Candidate = Pair;
-
-    fn complete(
-        &self,
-        line: &str,
-        pos: usize,
-        _ctx: &Context<'_>,
-    ) -> rustyline::Result<(usize, Vec<Pair>)> {
-        // Only complete first token (command)
-        let start = line[..pos]
-            .rfind(|c: char| c.is_whitespace())
-            .map(|i| i + 1)
-            .unwrap_or(0);
-
-        if start != 0 {
-            return Ok((pos, vec![]));
-        }
-
-        let prefix = &line[start..pos];
-        if prefix.is_empty() {
-            return Ok((pos, vec![]));
-        }
-
-        let mut matches: Vec<String> = Vec::new();
-
-        // builtins
-        let builtins = ["echo", "exit", "type", "pwd", "cd"];
-        for b in builtins {
-            if b.starts_with(prefix) {
-                matches.push(b.to_string());
-            }
-        }
-
-        // executables
-        for exe in executables_in_path_starting_with(prefix) {
-            matches.push(exe);
-        }
-
-        matches.sort();
-        matches.dedup();
-
-        // No matches: bell
-        if matches.is_empty() {
-            let mut st = self.state.borrow_mut();
-            st.last_prefix = None;
-            st.armed_for_list = false;
-            return Ok((pos, vec![]));
-        }
-
-        // One match: complete + space
-        if matches.len() == 1 {
-            let mut st = self.state.borrow_mut();
-            st.last_prefix = None;
-            st.armed_for_list = false;
-
-            let m = &matches[0];
-            return Ok((
-                start,
-                vec![Pair {
-                    display: m.clone(),
-                    replacement: format!("{m} "),
-                }],
-            ));
-        }
-
-        // Multiple matches behavior: 1st tab bell, 2nd tab list
-        let mut st = self.state.borrow_mut();
-        if st.last_prefix.as_deref() == Some(prefix) && st.armed_for_list {
-            st.armed_for_list = false;
-
-            let pairs: Vec<Pair> = matches
-                .into_iter()
-                .map(|m| Pair {
-                    display: m.clone(),
-                    replacement: m,
-                })
-                .collect();
-
-            Ok((start, pairs))
-        } else {
-            st.last_prefix = Some(prefix.to_string());
-            st.armed_for_list = true;
-            Ok((pos, vec![]))
-        }
-    }
-}
-
-// ---------- PATH helpers ----------
+// ---- helpers for completion ----
 fn executables_in_path_starting_with(prefix: &str) -> Vec<String> {
     let mut out = Vec::new();
     let paths = match env::var_os("PATH") {
@@ -175,9 +87,141 @@ fn executables_in_path_starting_with(prefix: &str) -> Vec<String> {
             }
         }
     }
+    out.sort();
+    out.dedup();
     out
 }
 
+fn longest_common_prefix(strs: &[String]) -> String {
+    if strs.is_empty() {
+        return String::new();
+    }
+    if strs.len() == 1 {
+        return strs[0].clone();
+    }
+
+    let first = strs[0].as_bytes();
+    let mut end = first.len();
+
+    for s in &strs[1..] {
+        let b = s.as_bytes();
+        let mut i = 0usize;
+        while i < end && i < b.len() && first[i] == b[i] {
+            i += 1;
+        }
+        end = end.min(i);
+        if end == 0 {
+            break;
+        }
+    }
+
+    String::from_utf8_lossy(&first[..end]).to_string()
+}
+
+impl Completer for ShellHelper {
+    type Candidate = Pair;
+
+    fn complete(
+        &self,
+        line: &str,
+        pos: usize,
+        _ctx: &Context<'_>,
+    ) -> rustyline::Result<(usize, Vec<Pair>)> {
+        // Only complete first token (command position)
+        let start = line[..pos]
+            .rfind(|c: char| c.is_whitespace())
+            .map(|i| i + 1)
+            .unwrap_or(0);
+
+        if start != 0 {
+            return Ok((pos, vec![]));
+        }
+
+        let prefix = &line[start..pos];
+        if prefix.is_empty() {
+            return Ok((pos, vec![]));
+        }
+
+        // Collect matches (builtins + executables)
+        let mut matches: Vec<String> = Vec::new();
+
+        let builtins = ["echo", "exit", "type", "pwd", "cd"];
+        for b in builtins {
+            if b.starts_with(prefix) {
+                matches.push(b.to_string());
+            }
+        }
+        matches.extend(executables_in_path_starting_with(prefix));
+
+        matches.sort();
+        matches.dedup();
+
+        // No matches -> bell by rustyline
+        if matches.is_empty() {
+            let mut st = self.state.borrow_mut();
+            st.last_prefix = None;
+            st.armed_for_list = false;
+            return Ok((pos, vec![]));
+        }
+
+        // Exactly one match -> full completion + trailing space
+        if matches.len() == 1 {
+            let mut st = self.state.borrow_mut();
+            st.last_prefix = None;
+            st.armed_for_list = false;
+
+            let m = &matches[0];
+            return Ok((
+                start,
+                vec![Pair {
+                    display: m.clone(),
+                    replacement: format!("{m} "),
+                }],
+            ));
+        }
+
+        // Multiple matches: try LCP completion first (#wt6)
+        let lcp = longest_common_prefix(&matches);
+
+        if lcp.len() > prefix.len() {
+            // Progress possible: replace with LCP (NO bell, NO listing)
+            let mut st = self.state.borrow_mut();
+            st.last_prefix = None;
+            st.armed_for_list = false;
+
+            return Ok((
+                start,
+                vec![Pair {
+                    display: lcp.clone(),
+                    replacement: lcp,
+                }],
+            ));
+        }
+
+        // No LCP progress: fall back to previous stage behavior:
+        // 1st TAB -> bell only, 2nd TAB -> list all matches
+        let mut st = self.state.borrow_mut();
+        if st.last_prefix.as_deref() == Some(prefix) && st.armed_for_list {
+            st.armed_for_list = false;
+
+            let pairs: Vec<Pair> = matches
+                .into_iter()
+                .map(|m| Pair {
+                    display: m.clone(),
+                    replacement: m, // keep buffer unchanged
+                })
+                .collect();
+
+            Ok((start, pairs))
+        } else {
+            st.last_prefix = Some(prefix.to_string());
+            st.armed_for_list = true;
+            Ok((pos, vec![]))
+        }
+    }
+}
+
+// ---------- PATH helper for execution ----------
 fn find_executable_in_path(name: &str) -> Option<PathBuf> {
     let paths = env::var_os("PATH")?;
     for dir in env::split_paths(&paths) {
@@ -189,13 +233,8 @@ fn find_executable_in_path(name: &str) -> Option<PathBuf> {
     None
 }
 
-// ---------- parsing ----------
+// ---------- tokenization (supports quotes + backslash + PIPE token) ----------
 fn tokenize(line: &str) -> Vec<String> {
-    // Supports:
-    // - single quotes
-    // - double quotes
-    // - backslash escaping (outside single quotes; limited inside double quotes)
-    // - treats | as a token when not in quotes
     let mut args: Vec<String> = Vec::new();
     let mut current = String::new();
 
@@ -238,7 +277,6 @@ fn tokenize(line: &str) -> Vec<String> {
             continue;
         }
 
-        // PIPE token when not quoted
         if !in_single && !in_double && ch == '|' {
             if !current.is_empty() {
                 args.push(current);
@@ -248,7 +286,6 @@ fn tokenize(line: &str) -> Vec<String> {
             continue;
         }
 
-        // Whitespace splits when not quoted
         if !in_single && !in_double && ch.is_whitespace() {
             if !current.is_empty() {
                 args.push(current);
@@ -273,7 +310,7 @@ fn tokenize(line: &str) -> Vec<String> {
 #[derive(Debug, Clone)]
 struct ParsedCommand {
     cmd: String,
-    args: Vec<String>, // args only (no redirection tokens)
+    args: Vec<String>,
     stdout: StdoutRedirect,
     stderr: StderrRedirect,
 }
@@ -339,14 +376,12 @@ fn parse_command(tokens: &[String]) -> Option<ParsedCommand> {
 }
 
 fn split_pipeline(tokens: &[String]) -> Option<Vec<Vec<String>>> {
-    // Split by "|" token
     let mut out: Vec<Vec<String>> = Vec::new();
     let mut cur: Vec<String> = Vec::new();
 
     for t in tokens {
         if t == "|" {
             if cur.is_empty() {
-                // empty command in pipeline
                 eprintln!("syntax error near unexpected token `|`");
                 return None;
             }
@@ -365,7 +400,6 @@ fn split_pipeline(tokens: &[String]) -> Option<Vec<Vec<String>>> {
     Some(out)
 }
 
-// ---------- execution helpers ----------
 fn open_for_stdout(redir: &StdoutRedirect) -> io::Result<Option<File>> {
     match redir {
         StdoutRedirect::Inherit => Ok(None),
@@ -386,14 +420,10 @@ fn is_builtin(cmd: &str) -> bool {
     matches!(cmd, "exit" | "echo" | "pwd" | "type" | "cd")
 }
 
-// Run a builtin and return its stdout/stderr bytes.
-// NOTE: For pipeline stages, we do NOT apply "exit" or "cd" effects to the parent shell.
+// Builtins for pipeline stages (subshell-like)
 fn run_builtin_capture(cmd: &str, args: &[String]) -> (Vec<u8>, Vec<u8>, i32) {
     match cmd {
-        "echo" => {
-            let out = args.join(" ") + "\n";
-            (out.into_bytes(), vec![], 0)
-        }
+        "echo" => (format!("{}\n", args.join(" ")).into_bytes(), vec![], 0),
         "pwd" => match env::current_dir() {
             Ok(p) => (format!("{}\n", p.display()).into_bytes(), vec![], 0),
             Err(e) => (vec![], format!("pwd: {e}\n").into_bytes(), 1),
@@ -413,8 +443,7 @@ fn run_builtin_capture(cmd: &str, args: &[String]) -> (Vec<u8>, Vec<u8>, i32) {
             }
         }
         "cd" => {
-            // In a pipeline stage, behave like a subshell: do not change parent dir.
-            // We'll still validate/return errors for realism.
+            // subshell behavior in pipeline: don't change parent
             if args.is_empty() {
                 return (vec![], vec![], 0);
             }
@@ -429,25 +458,23 @@ fn run_builtin_capture(cmd: &str, args: &[String]) -> (Vec<u8>, Vec<u8>, i32) {
             };
 
             if !target.is_dir() {
-                return (vec![], format!("cd: {}: No such file or directory\n", dest).into_bytes(), 1);
+                return (
+                    vec![],
+                    format!("cd: {}: No such file or directory\n", dest).into_bytes(),
+                    1,
+                );
             }
-            // don't actually set_current_dir here for pipeline
             (vec![], vec![], 0)
         }
-        "exit" => {
-            // Pipeline stage exit does nothing; just succeed
-            (vec![], vec![], 0)
-        }
+        "exit" => (vec![], vec![], 0),
         _ => (vec![], format!("{cmd}: command not found\n").into_bytes(), 127),
     }
 }
 
-// Run an external command, feeding it `stdin_bytes`, and capture stdout/stderr.
 fn run_external_capture(cmd: &str, args: &[String], stdin_bytes: &[u8]) -> io::Result<(Vec<u8>, Vec<u8>, i32)> {
     let mut command = Command::new(cmd);
     command.args(args);
 
-    // feed stdin if needed
     command.stdin(Stdio::piped());
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
@@ -463,10 +490,6 @@ fn run_external_capture(cmd: &str, args: &[String], stdin_bytes: &[u8]) -> io::R
     Ok((output.stdout, output.stderr, code))
 }
 
-// Apply stdout/stderr handling for a stage:
-// - If redirected to file, write there
-// - Else if inherit_to_terminal is true, write to terminal
-// - Else return bytes (for piping)
 fn handle_stage_output(
     stdout_bytes: Vec<u8>,
     stderr_bytes: Vec<u8>,
@@ -502,7 +525,6 @@ fn handle_stage_output(
                 }
                 Ok(Vec::new())
             } else {
-                // pipe onward
                 Ok(stdout_bytes)
             }
         }
@@ -511,30 +533,24 @@ fn handle_stage_output(
                 f.write_all(&stdout_bytes)?;
                 f.flush()?;
             }
-            // redirected, so nothing to pipe
             Ok(Vec::new())
         }
     }
 }
 
-// Execute a pipeline (one or many stages).
-// Pipeline is executed sequentially with captured output (sufficient for CodeCrafters tests).
 fn execute_pipeline(stages: Vec<ParsedCommand>) {
     let mut input: Vec<u8> = Vec::new();
 
     for (idx, stage) in stages.iter().enumerate() {
         let is_last = idx + 1 == stages.len();
-        let inherit_stdout_to_terminal = is_last; // last stage prints unless redirected
+        let inherit_stdout_to_terminal = is_last;
 
         let (stdout_bytes, stderr_bytes, _code) = if is_builtin(&stage.cmd) {
             run_builtin_capture(&stage.cmd, &stage.args)
         } else if find_executable_in_path(&stage.cmd).is_some() {
             match run_external_capture(&stage.cmd, &stage.args, &input) {
                 Ok(v) => v,
-                Err(e) => {
-                    // external spawn error -> treat as stderr
-                    (Vec::new(), format!("{}: {e}\n", stage.cmd).into_bytes(), 1)
-                }
+                Err(e) => (Vec::new(), format!("{}: {e}\n", stage.cmd).into_bytes(), 1),
             }
         } else {
             (Vec::new(), format!("{}: command not found\n", stage.cmd).into_bytes(), 127)
@@ -584,7 +600,6 @@ fn main() {
         let tokens = tokenize(&line);
         let Some(chunks) = split_pipeline(&tokens) else { continue };
 
-        // Parse all stages
         let mut stages: Vec<ParsedCommand> = Vec::new();
         for chunk in chunks {
             let Some(pc) = parse_command(&chunk) else {
@@ -597,7 +612,7 @@ fn main() {
             continue;
         }
 
-        // If single command and it's exit/cd, apply effects to parent shell normally
+        // Parent-shell effects only for single command
         if stages.len() == 1 {
             let s = &stages[0];
 
@@ -629,7 +644,6 @@ fn main() {
             }
         }
 
-        // Otherwise execute pipeline (1+ stages). Builtins inside act like subshell.
         execute_pipeline(stages);
     }
 }
