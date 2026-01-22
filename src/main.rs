@@ -18,6 +18,12 @@ use rustyline::history::DefaultHistory;
 use rustyline::validate::Validator;
 use rustyline::{Context, Editor, Helper};
 
+use std::os::unix::io::FromRawFd;
+
+// ---------- libc pipe ----------
+use libc;
+
+// ---------------- Redirect enums ----------------
 #[derive(Debug, Clone)]
 enum StdoutRedirect {
     Inherit,
@@ -145,7 +151,7 @@ impl Completer for ShellHelper {
         // Collect matches (builtins + executables)
         let mut matches: Vec<String> = Vec::new();
 
-        let builtins = ["echo", "exit", "type", "pwd", "cd"];
+        let builtins = ["echo", "exit", "type", "pwd", "cd", "history"];
         for b in builtins {
             if b.starts_with(prefix) {
                 matches.push(b.to_string());
@@ -414,10 +420,10 @@ fn open_for_stderr(redir: &StderrRedirect) -> io::Result<Option<File>> {
 }
 
 fn is_builtin(cmd: &str) -> bool {
-    matches!(cmd, "exit" | "echo" | "pwd" | "type" | "cd")
+    matches!(cmd, "exit" | "echo" | "pwd" | "type" | "cd" | "history")
 }
 
-// ---------- builtin output routing (for single command mode) ----------
+// ---------- builtin output routing (single command) ----------
 fn write_routed_output(
     stdout_bytes: &[u8],
     stderr_bytes: &[u8],
@@ -464,7 +470,25 @@ fn write_routed_output(
     }
 }
 
-fn run_builtin_capture_for_single(cmd: &str, args: &[String]) -> (Vec<u8>, Vec<u8>, i32) {
+// -------- history printing helper (matches tester formatting) --------
+fn history_output(history: &[String], n: Option<usize>) -> Vec<u8> {
+    let len = history.len();
+    let start = match n {
+        Some(k) if k < len => len - k,
+        Some(_) => 0,
+        None => 0,
+    };
+
+    let mut out = String::new();
+    for (idx0, cmd) in history.iter().enumerate().skip(start) {
+        // Tester format: "    1  cmd"
+        out.push_str(&format!("{:>5}  {}\n", idx0 + 1, cmd));
+    }
+    out.into_bytes()
+}
+
+// ---------- builtin output bytes ----------
+fn builtin_bytes(cmd: &str, args: &[String], history: &[String]) -> (Vec<u8>, Vec<u8>, i32) {
     match cmd {
         "echo" => (format!("{}\n", args.join(" ")).into_bytes(), vec![], 0),
         "pwd" => match env::current_dir() {
@@ -476,7 +500,7 @@ fn run_builtin_capture_for_single(cmd: &str, args: &[String]) -> (Vec<u8>, Vec<u
                 return (vec![], b"type: missing operand\n".to_vec(), 1);
             }
             let target = args[0].as_str();
-            let builtins = ["exit", "echo", "type", "pwd", "cd"];
+            let builtins = ["exit", "echo", "type", "pwd", "cd", "history"];
             if builtins.contains(&target) {
                 (format!("{target} is a shell builtin\n").into_bytes(), vec![], 0)
             } else if let Some(p) = find_executable_in_path(target) {
@@ -485,10 +509,22 @@ fn run_builtin_capture_for_single(cmd: &str, args: &[String]) -> (Vec<u8>, Vec<u
                 (format!("{target} not found\n").into_bytes(), vec![], 0)
             }
         }
-        _ => (vec![], vec![], 0),
+        "history" => {
+            // history [n]
+            let n = if args.len() == 1 {
+                args[0].parse::<usize>().ok()
+            } else {
+                None
+            };
+            (history_output(history, n), vec![], 0)
+        }
+        "cd" => (vec![], vec![], 0),   // pipeline "cd" doesn't affect parent
+        "exit" => (vec![], vec![], 0), // pipeline "exit" treated as no-op
+        _ => (vec![], format!("{cmd}: command not found\n").into_bytes(), 127),
     }
 }
 
+// ---------- run single external ----------
 fn run_single_external(stage: &ParsedCommand) {
     if find_executable_in_path(&stage.cmd).is_none() {
         eprintln!("{}: command not found", stage.cmd);
@@ -554,63 +590,31 @@ fn make_pipe() -> io::Result<(File, File)> {
     if rc != 0 {
         return Err(io::Error::last_os_error());
     }
-    // SAFETY: fds are valid pipe ends from libc::pipe
     let read_end = unsafe { File::from_raw_fd(fds[0]) };
     let write_end = unsafe { File::from_raw_fd(fds[1]) };
     Ok((read_end, write_end))
 }
 
-use std::os::unix::io::FromRawFd;
-
-// ---------- builtin execution for pipeline (writes to provided stdout/stderr) ----------
-fn builtin_bytes(cmd: &str, args: &[String]) -> (Vec<u8>, Vec<u8>, i32) {
-    match cmd {
-        "echo" => (format!("{}\n", args.join(" ")).into_bytes(), vec![], 0),
-        "pwd" => match env::current_dir() {
-            Ok(p) => (format!("{}\n", p.display()).into_bytes(), vec![], 0),
-            Err(e) => (vec![], format!("pwd: {e}\n").into_bytes(), 1),
-        },
-        "type" => {
-            if args.is_empty() {
-                return (vec![], b"type: missing operand\n".to_vec(), 1);
-            }
-            let target = args[0].as_str();
-            let builtins = ["exit", "echo", "type", "pwd", "cd"];
-            if builtins.contains(&target) {
-                (format!("{target} is a shell builtin\n").into_bytes(), vec![], 0)
-            } else if let Some(p) = find_executable_in_path(target) {
-                (format!("{target} is {}\n", p.display()).into_bytes(), vec![], 0)
-            } else {
-                (format!("{target} not found\n").into_bytes(), vec![], 0)
-            }
-        }
-        "cd" => {
-            // In a pipeline, "cd" should not affect parent shell.
-            (vec![], vec![], 0)
-        }
-        "exit" => (vec![], vec![], 0),
-        _ => (vec![], format!("{cmd}: command not found\n").into_bytes(), 127),
-    }
-}
-
-fn write_to_target(mut out: Vec<u8>, mut err: Vec<u8>, stdout: &StdoutRedirect, stderr: &StderrRedirect, cmd: &str, mut out_sink: Option<File>, mut err_sink: Option<File>) {
-    // stderr first
-    match stderr {
+// ---------- write builtin output either to pipe or terminal/file ----------
+fn write_to_target(
+    out: Vec<u8>,
+    err: Vec<u8>,
+    stdout_redir: &StdoutRedirect,
+    stderr_redir: &StderrRedirect,
+    cmd: &str,
+    out_sink: Option<File>,
+) {
+    // stderr: pipeline stages keep stderr on terminal unless redirected
+    match stderr_redir {
         StderrRedirect::Inherit => {
-            if err_sink.is_some() {
-                // pipeline provided a sink; use it
-                if let Some(mut f) = err_sink.take() {
-                    let _ = f.write_all(&err);
-                    let _ = f.flush();
-                }
-            } else if !err.is_empty() {
+            if !err.is_empty() {
                 let mut e = io::stderr();
                 let _ = e.write_all(&err);
                 let _ = e.flush();
             }
         }
         _ => {
-            if let Ok(Some(mut f)) = open_for_stderr(stderr) {
+            if let Ok(Some(mut f)) = open_for_stderr(stderr_redir) {
                 let _ = f.write_all(&err);
                 let _ = f.flush();
             }
@@ -618,21 +622,25 @@ fn write_to_target(mut out: Vec<u8>, mut err: Vec<u8>, stdout: &StdoutRedirect, 
     }
 
     // stdout
-    match stdout {
+    if let Some(mut pipe_writer) = out_sink {
+        // If we have a pipe sink, always write stdout there (that’s pipeline semantics)
+        let _ = pipe_writer.write_all(&out);
+        let _ = pipe_writer.flush();
+        // pipe_writer drops here => closes pipe
+        return;
+    }
+
+    // No pipe sink => last stage: honor stdout redirection
+    match stdout_redir {
         StdoutRedirect::Inherit => {
-            if out_sink.is_some() {
-                if let Some(mut f) = out_sink.take() {
-                    let _ = f.write_all(&out);
-                    let _ = f.flush();
-                }
-            } else if !out.is_empty() {
+            if !out.is_empty() {
                 let mut o = io::stdout();
                 let _ = o.write_all(&out);
                 let _ = o.flush();
             }
         }
         _ => {
-            if let Ok(Some(mut f)) = open_for_stdout(stdout) {
+            if let Ok(Some(mut f)) = open_for_stdout(stdout_redir) {
                 let _ = f.write_all(&out);
                 let _ = f.flush();
             }
@@ -640,14 +648,13 @@ fn write_to_target(mut out: Vec<u8>, mut err: Vec<u8>, stdout: &StdoutRedirect, 
     }
 }
 
-// ---------- FULL pipeline execution with builtins ----------
-fn execute_pipeline_with_builtins(stages: &[ParsedCommand]) {
+// ---------- FULL pipeline execution (supports N stages, builtins + externals) ----------
+fn execute_pipeline(stages: &[ParsedCommand], history_vec: &[String]) {
     if stages.is_empty() {
         return;
     }
 
-    // Build pipes between stages
-    // pipes[i] connects stage i -> stage i+1
+    // Create N-1 pipes
     let mut pipes: Vec<(File, File)> = Vec::new();
     for _ in 0..(stages.len().saturating_sub(1)) {
         match make_pipe() {
@@ -660,21 +667,20 @@ fn execute_pipeline_with_builtins(stages: &[ParsedCommand]) {
     }
 
     let mut children: Vec<Child> = Vec::new();
-    let mut builtin_handles: Vec<std::thread::JoinHandle<()>> = Vec::new();
+    let mut builtin_threads: Vec<std::thread::JoinHandle<()>> = Vec::new();
 
     for (i, stage) in stages.iter().enumerate() {
         let is_first = i == 0;
         let is_last = i + 1 == stages.len();
 
-        // Determine stdin for this stage
-        let stdin_file: Option<File> = if is_first {
+        // stdin for stage i
+        let stdin_for_stage: Option<File> = if is_first {
             None
         } else {
-            // read end of previous pipe
             Some(pipes[i - 1].0.try_clone().unwrap())
         };
 
-        // Determine stdout for this stage (pipe write end if not last)
+        // stdout sink for stage i (pipe write end) if not last
         let stdout_pipe_write: Option<File> = if is_last {
             None
         } else {
@@ -682,33 +688,22 @@ fn execute_pipeline_with_builtins(stages: &[ParsedCommand]) {
         };
 
         if is_builtin(&stage.cmd) {
-            // Builtin runs in-process but should behave like a pipeline stage:
-            // write its stdout into the next pipe (unless last -> terminal/file redirect).
             let cmd = stage.cmd.clone();
             let args = stage.args.clone();
             let stdout_redir = stage.stdout.clone();
             let stderr_redir = stage.stderr.clone();
-
-            // Important: if builtin is not last, its stdout must go into pipe write end.
-            // (If last, stdout_pipe_write is None and we use redirection/terminal.)
+            let hist_snapshot: Vec<String> = history_vec.to_vec();
             let out_sink = stdout_pipe_write;
-            let err_sink = None;
 
-            // Close our stdin side immediately (we don't consume stdin for these builtins).
-            drop(stdin_file);
+            // Builtins for this stage do not consume stdin in these CodeCrafters stages
+            drop(stdin_for_stage);
 
             let h = std::thread::spawn(move || {
-                let (out, err, _code) = builtin_bytes(&cmd, &args);
-
-                // If builtin is not last, we must write to provided pipe write end.
-                // If last, out_sink is None and we route based on stdout_redir.
-                write_to_target(out, err, &stdout_redir, &stderr_redir, &cmd, out_sink, err_sink);
-                // out_sink drops here => closes pipe => downstream sees EOF
+                let (out, err, _code) = builtin_bytes(&cmd, &args, &hist_snapshot);
+                write_to_target(out, err, &stdout_redir, &stderr_redir, &cmd, out_sink);
             });
-
-            builtin_handles.push(h);
+            builtin_threads.push(h);
         } else {
-            // External command
             if find_executable_in_path(&stage.cmd).is_none() {
                 eprintln!("{}: command not found", stage.cmd);
                 return;
@@ -718,7 +713,7 @@ fn execute_pipeline_with_builtins(stages: &[ParsedCommand]) {
             cmd.args(&stage.args);
 
             // stdin
-            if let Some(f) = stdin_file {
+            if let Some(f) = stdin_for_stage {
                 cmd.stdin(Stdio::from(f));
             } else {
                 cmd.stdin(Stdio::inherit());
@@ -726,45 +721,31 @@ fn execute_pipeline_with_builtins(stages: &[ParsedCommand]) {
 
             // stdout
             if !is_last {
-                // pipe to next
                 if let Some(f) = stdout_pipe_write {
                     cmd.stdout(Stdio::from(f));
                 } else {
                     cmd.stdout(Stdio::piped());
                 }
             } else {
-                // last stage: apply stdout redirection
                 match &stage.stdout {
-                    StdoutRedirect::Inherit => {
-                        cmd.stdout(Stdio::inherit());
-                    }
+                    StdoutRedirect::Inherit => cmd.stdout(Stdio::inherit()),
                     _ => match open_for_stdout(&stage.stdout) {
-                        Ok(Some(f)) => {
-                            cmd.stdout(Stdio::from(f));
-                        }
-                        Ok(None) => {
-                            cmd.stdout(Stdio::inherit());
-                        }
+                        Ok(Some(f)) => cmd.stdout(Stdio::from(f)),
+                        Ok(None) => cmd.stdout(Stdio::inherit()),
                         Err(e) => {
                             eprintln!("{}: {e}", stage.cmd);
                             return;
                         }
                     },
-                }
+                };
             }
 
-            // stderr (always apply)
+            // stderr
             match &stage.stderr {
-                StderrRedirect::Inherit => {
-                    cmd.stderr(Stdio::inherit());
-                }
+                StderrRedirect::Inherit => cmd.stderr(Stdio::inherit()),
                 _ => match open_for_stderr(&stage.stderr) {
-                    Ok(Some(f)) => {
-                        cmd.stderr(Stdio::from(f));
-                    }
-                    Ok(None) => {
-                        cmd.stderr(Stdio::inherit());
-                    }
+                    Ok(Some(f)) => cmd.stderr(Stdio::from(f)),
+                    Ok(None) => cmd.stderr(Stdio::inherit()),
                     Err(e) => {
                         eprintln!("{}: {e}", stage.cmd);
                         return;
@@ -782,16 +763,15 @@ fn execute_pipeline_with_builtins(stages: &[ParsedCommand]) {
         }
     }
 
-    // Close pipe fds in parent to avoid keeping pipes alive accidentally
+    // Very important: close all pipe fds in parent so downstream sees EOF properly
     drop(pipes);
 
-    // Wait for builtins
-    for h in builtin_handles {
+    // Join builtins
+    for h in builtin_threads {
         let _ = h.join();
     }
 
-    // Wait for children (last stage first-ish)
-    // (Simple: just wait all)
+    // Wait children (works fine for multi-stage)
     for mut c in children {
         let _ = c.wait();
     }
@@ -805,6 +785,9 @@ fn main() {
 
     let mut rl: Editor<ShellHelper, DefaultHistory> = Editor::with_config(config).unwrap();
     rl.set_helper(Some(ShellHelper::new()));
+
+    // Our own history list for the "history" builtin output (must include invalid commands + history itself)
+    let mut history_vec: Vec<String> = Vec::new();
 
     loop {
         let line = match rl.readline("$ ") {
@@ -822,6 +805,12 @@ fn main() {
             continue;
         }
 
+        // Add to rustyline history so up/down arrows work
+        let _ = rl.add_history_entry(line.as_str());
+
+        // Add to our command history so "history" builtin prints what tester expects
+        history_vec.push(line.clone());
+
         let tokens = tokenize(&line);
         let Some(chunks) = split_pipeline(&tokens) else { continue };
 
@@ -837,7 +826,7 @@ fn main() {
             continue;
         }
 
-        // SINGLE COMMAND: parent effects + builtin redirections
+        // SINGLE COMMAND: parent effects + builtins + externals
         if stages.len() == 1 {
             let s = &stages[0];
 
@@ -869,16 +858,17 @@ fn main() {
             }
 
             if is_builtin(&s.cmd) {
-                let (out, err, _code) = run_builtin_capture_for_single(&s.cmd, &s.args);
+                let (out, err, _code) = builtin_bytes(&s.cmd, &s.args, &history_vec);
                 write_routed_output(&out, &err, &s.stdout, &s.stderr, &s.cmd);
                 continue;
             }
 
+            // external single
             run_single_external(s);
             continue;
         }
 
-        // PIPELINE (now supports builtins)
-        execute_pipeline_with_builtins(&stages);
+        // PIPELINE (supports builtins + multi-command pipelines)
+        execute_pipeline(&stages, &history_vec);
     }
 }
