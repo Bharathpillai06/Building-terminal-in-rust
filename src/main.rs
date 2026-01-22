@@ -13,6 +13,13 @@ enum StdoutRedirect {
     Append(String),   // >> or 1>>
 }
 
+#[derive(Debug, Clone)]
+enum StderrRedirect {
+    Inherit,
+    Truncate(String), // 2>
+    Append(String),   // 2>>
+}
+
 fn main() {
     loop {
         let mut input = String::new();
@@ -108,7 +115,7 @@ fn main() {
         // ---------- parse redirections ----------
         let mut clean_args: Vec<String> = Vec::new();
         let mut stdout_redirect = StdoutRedirect::Inherit;
-        let mut stderr_path: Option<String> = None;
+        let mut stderr_redirect = StderrRedirect::Inherit;
 
         let mut i = 1;
         let mut syntax_error = false;
@@ -139,7 +146,16 @@ fn main() {
                         syntax_error = true;
                         break;
                     }
-                    stderr_path = Some(parts[i + 1].clone());
+                    stderr_redirect = StderrRedirect::Truncate(parts[i + 1].clone());
+                    i += 2;
+                }
+                "2>>" => {
+                    if i + 1 >= parts.len() {
+                        eprintln!("{cmd}: syntax error near unexpected token `newline`");
+                        syntax_error = true;
+                        break;
+                    }
+                    stderr_redirect = StderrRedirect::Append(parts[i + 1].clone());
                     i += 2;
                 }
                 _ => {
@@ -153,16 +169,24 @@ fn main() {
             continue;
         }
 
-        // Create stderr file early if requested (even if unused), matching tester behavior.
-        let mut stderr_file: Option<File> = match &stderr_path {
-            Some(p) => match File::create(p) {
+        // Create/open stderr file early if requested (even if unused),
+        // matching tester behavior: `echo "..." 2>> file` should create/append file.
+        let mut stderr_file: Option<File> = match &stderr_redirect {
+            StderrRedirect::Inherit => None,
+            StderrRedirect::Truncate(path) => match File::create(path) {
                 Ok(f) => Some(f),
                 Err(e) => {
                     eprintln!("{cmd}: {e}");
                     None
                 }
             },
-            None => None,
+            StderrRedirect::Append(path) => match OpenOptions::new().create(true).append(true).open(path) {
+                Ok(f) => Some(f),
+                Err(e) => {
+                    eprintln!("{cmd}: {e}");
+                    None
+                }
+            },
         };
 
         let mut write_err = |msg: &str| {
@@ -184,6 +208,8 @@ fn main() {
 
         if cmd == "echo" {
             let out = clean_args.join(" ");
+
+            // stdout redirection applies to builtin echo
             match &stdout_redirect {
                 StdoutRedirect::Inherit => {
                     println!("{out}");
@@ -216,6 +242,7 @@ fn main() {
             }
             let target = clean_args[0].as_str();
             let builtins = ["exit", "echo", "type", "pwd", "cd"];
+
             if builtins.contains(&target) {
                 println!("{target} is a shell builtin");
             } else if let Some(p) = find_executable_in_path(target) {
@@ -231,6 +258,7 @@ fn main() {
                 continue;
             }
             let dest = clean_args[0].as_str();
+
             let target = if dest == "~" {
                 match env::home_dir() {
                     Some(h) => h,
@@ -257,33 +285,40 @@ fn main() {
             // stdout redirect
             match &stdout_redirect {
                 StdoutRedirect::Inherit => {}
-                StdoutRedirect::Truncate(path) => {
-                    match File::create(path) {
-                        Ok(f) => {
-                            command.stdout(Stdio::from(f));
-                        }
-                        Err(e) => {
-                            write_err(&format!("{cmd}: {e}\n"));
-                            continue;
-                        }
+                StdoutRedirect::Truncate(path) => match File::create(path) {
+                    Ok(f) => {
+                        command.stdout(Stdio::from(f));
                     }
-                }
-                StdoutRedirect::Append(path) => {
-                    match OpenOptions::new().create(true).append(true).open(path) {
-                        Ok(f) => {
-                            command.stdout(Stdio::from(f));
-                        }
-                        Err(e) => {
-                            write_err(&format!("{cmd}: {e}\n"));
-                            continue;
-                        }
+                    Err(e) => {
+                        write_err(&format!("{cmd}: {e}\n"));
+                        continue;
                     }
-                }
+                },
+                StdoutRedirect::Append(path) => match OpenOptions::new().create(true).append(true).open(path) {
+                    Ok(f) => {
+                        command.stdout(Stdio::from(f));
+                    }
+                    Err(e) => {
+                        write_err(&format!("{cmd}: {e}\n"));
+                        continue;
+                    }
+                },
             }
 
-            // stderr redirect
-            if let Some(path) = &stderr_path {
-                match File::create(path) {
+            // stderr redirect (2> / 2>>)
+            match &stderr_redirect {
+                StderrRedirect::Inherit => {}
+                StderrRedirect::Truncate(path) => match File::create(path) {
+                    Ok(f) => {
+                        command.stderr(Stdio::from(f));
+                    }
+                    Err(e) => {
+                        // if redirect file can't be opened, report that error (respecting builtin stderr redirection if any)
+                        write_err(&format!("{cmd}: {e}\n"));
+                        continue;
+                    }
+                },
+                StderrRedirect::Append(path) => match OpenOptions::new().create(true).append(true).open(path) {
                     Ok(f) => {
                         command.stderr(Stdio::from(f));
                     }
@@ -291,11 +326,11 @@ fn main() {
                         write_err(&format!("{cmd}: {e}\n"));
                         continue;
                     }
-                }
+                },
             }
 
             if let Err(e) = command.status() {
-                // spawn/exec error from your shell: respect 2> too
+                // exec/spawn error from your shell: respect 2>/2>> too via write_err
                 write_err(&format!("{cmd}: {e}\n"));
             }
         } else {
