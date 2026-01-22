@@ -1,7 +1,8 @@
 #[allow(unused_imports)]
+use std::cell::RefCell;
 use std::env;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -9,6 +10,7 @@ use is_executable::IsExecutable;
 
 // ---------- rustyline ----------
 use rustyline::completion::{Completer, Pair};
+use rustyline::config::{CompletionType, Config};
 use rustyline::error::ReadlineError;
 use rustyline::highlight::Highlighter;
 use rustyline::hint::Hinter;
@@ -30,20 +32,24 @@ enum StderrRedirect {
     Append(String),   // 2>>
 }
 
-#[derive(Clone, Debug)]
-struct ShellHelper {
-    // For the "double-tab shows list" behavior
+// State needed for "TAB then TAB" behavior
+#[derive(Debug)]
+struct CompletionState {
     last_prefix: Option<String>,
-    last_was_tab_no_completion: bool,
-    tab_count_for_prefix: u8,
+    armed_for_list: bool, // after first TAB with multiple matches
+}
+
+struct ShellHelper {
+    state: RefCell<CompletionState>,
 }
 
 impl ShellHelper {
     fn new() -> Self {
         Self {
-            last_prefix: None,
-            last_was_tab_no_completion: false,
-            tab_count_for_prefix: 0,
+            state: RefCell::new(CompletionState {
+                last_prefix: None,
+                armed_for_list: false,
+            }),
         }
     }
 }
@@ -76,6 +82,7 @@ impl Completer for ShellHelper {
             .unwrap_or(0);
 
         if start != 0 {
+            // For this stage, we only care about completing the command
             return Ok((pos, vec![]));
         }
 
@@ -84,9 +91,9 @@ impl Completer for ShellHelper {
             return Ok((pos, vec![]));
         }
 
+        // Collect builtin + executable matches
         let mut matches: Vec<String> = Vec::new();
 
-        // Builtins we support
         let builtins = ["echo", "exit", "type", "pwd", "cd"];
         for b in builtins {
             if b.starts_with(prefix) {
@@ -94,7 +101,6 @@ impl Completer for ShellHelper {
             }
         }
 
-        // Executables in PATH
         for exe in executables_in_path_starting_with(prefix) {
             matches.push(exe);
         }
@@ -102,8 +108,21 @@ impl Completer for ShellHelper {
         matches.sort();
         matches.dedup();
 
-        // If exactly one match, complete to it with a trailing space
+        // No matches -> let rustyline ring bell (missing completion stage)
+        if matches.is_empty() {
+            // reset multi state
+            let mut st = self.state.borrow_mut();
+            st.last_prefix = None;
+            st.armed_for_list = false;
+            return Ok((pos, vec![]));
+        }
+
+        // Exactly one match -> complete + trailing space
         if matches.len() == 1 {
+            let mut st = self.state.borrow_mut();
+            st.last_prefix = None;
+            st.armed_for_list = false;
+
             let m = &matches[0];
             return Ok((
                 start,
@@ -114,21 +133,35 @@ impl Completer for ShellHelper {
             ));
         }
 
-        // If multiple matches, return them as completion candidates.
-        // We'll override display behavior in the readline loop (two-tab behavior).
-        let pairs: Vec<Pair> = matches
-            .into_iter()
-            .map(|m| Pair {
-                display: m.clone(),
-                replacement: m,
-            })
-            .collect();
+        // Multiple matches -> implement:
+        // 1st TAB: bell only (return no candidates)
+        // 2nd TAB: show list (return candidates)
+        let mut st = self.state.borrow_mut();
+        let prefix_s = prefix.to_string();
 
-        Ok((start, pairs))
+        if st.last_prefix.as_deref() == Some(prefix) && st.armed_for_list {
+            // SECOND TAB for same prefix -> return candidates so rustyline prints them
+            st.armed_for_list = false;
+
+            let pairs: Vec<Pair> = matches
+                .into_iter()
+                .map(|m| Pair {
+                    display: m.clone(),
+                    replacement: m, // don't change buffer; listing is what we want
+                })
+                .collect();
+
+            return Ok((start, pairs));
+        } else {
+            // FIRST TAB for this prefix -> arm and return no candidates => bell
+            st.last_prefix = Some(prefix_s);
+            st.armed_for_list = true;
+            return Ok((pos, vec![]));
+        }
     }
 }
 
-// ---- helper: list matching executables in PATH (by filename) ----
+// List matching executables in PATH (by filename)
 fn executables_in_path_starting_with(prefix: &str) -> Vec<String> {
     let mut out = Vec::new();
     let paths = match env::var_os("PATH") {
@@ -137,18 +170,13 @@ fn executables_in_path_starting_with(prefix: &str) -> Vec<String> {
     };
 
     for dir in env::split_paths(&paths) {
-        // PATH can include non-existent dirs, ignore errors
         let Ok(entries) = fs::read_dir(&dir) else { continue };
 
         for entry in entries.flatten() {
             let path = entry.path();
-            if !path.is_file() {
+            if !path.is_file() || !path.is_executable() {
                 continue;
             }
-            if !path.is_executable() {
-                continue;
-            }
-
             if let Some(name_os) = path.file_name() {
                 let name = name_os.to_string_lossy().to_string();
                 if name.starts_with(prefix) {
@@ -161,7 +189,6 @@ fn executables_in_path_starting_with(prefix: &str) -> Vec<String> {
     out
 }
 
-// ---- same executable finder you already use for running commands ----
 fn find_executable_in_path(name: &str) -> Option<PathBuf> {
     let paths = env::var_os("PATH")?;
     for dir in env::split_paths(&paths) {
@@ -174,22 +201,29 @@ fn find_executable_in_path(name: &str) -> Option<PathBuf> {
 }
 
 fn main() {
-    let mut rl: Editor<ShellHelper, DefaultHistory> = Editor::new().unwrap();
+    // Key part for #wh6:
+    // - CompletionType::List ensures listing behavior
+    // - show_all_if_ambiguous(true) makes rustyline print the list immediately
+    //   when we return multiple candidates (we do that on SECOND TAB only).
+    let config = Config::builder()
+        .completion_type(CompletionType::List)
+        .show_all_if_ambiguous(true)
+        .build();
+
+    let mut rl: Editor<ShellHelper, DefaultHistory> = Editor::with_config(config).unwrap();
     rl.set_helper(Some(ShellHelper::new()));
 
     loop {
-        // Read input line
         let line = match rl.readline("$ ") {
             Ok(l) => l,
-            Err(ReadlineError::Interrupted) => continue, // Ctrl-C
-            Err(ReadlineError::Eof) => break,            // Ctrl-D
+            Err(ReadlineError::Interrupted) => continue,
+            Err(ReadlineError::Eof) => break,
             Err(e) => {
                 eprintln!("readline error: {e}");
                 break;
             }
         };
 
-        // Save in history (harmless)
         let _ = rl.add_history_entry(line.as_str());
 
         if line.is_empty() {
@@ -200,9 +234,12 @@ fn main() {
         let parts: Vec<String> = {
             let mut args = Vec::new();
             let mut current = String::new();
+
             let mut in_single = false;
             let mut in_double = false;
             let mut backslash = false;
+
+            // In double quotes, backslash only escapes: \ " $ `
             let dq_escapable = ['\\', '"', '$', '`'];
 
             for ch in line.chars() {
@@ -252,9 +289,11 @@ fn main() {
             if backslash {
                 current.push('\\');
             }
+
             if !current.is_empty() {
                 args.push(current);
             }
+
             args
         };
 
@@ -321,7 +360,7 @@ fn main() {
             continue;
         }
 
-        // Create/open stderr file early if requested (even if unused)
+        // Create/open stderr file early if requested
         let mut stderr_file: Option<File> = match &stderr_redirect {
             StderrRedirect::Inherit => None,
             StderrRedirect::Truncate(path) => File::create(path).ok(),
@@ -396,6 +435,7 @@ fn main() {
                 continue;
             }
             let dest = clean_args[0].as_str();
+
             let target = if dest == "~" {
                 match env::home_dir() {
                     Some(h) => h,
@@ -419,7 +459,6 @@ fn main() {
             let mut command = Command::new(cmd);
             command.args(clean_args.iter());
 
-            // stdout redirect
             match &stdout_redirect {
                 StdoutRedirect::Inherit => {}
                 StdoutRedirect::Truncate(path) => match File::create(path) {
@@ -442,7 +481,6 @@ fn main() {
                 },
             }
 
-            // stderr redirect
             match &stderr_redirect {
                 StderrRedirect::Inherit => {}
                 StderrRedirect::Truncate(path) => match File::create(path) {
