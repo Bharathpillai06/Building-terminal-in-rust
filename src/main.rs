@@ -82,7 +82,6 @@ impl Completer for ShellHelper {
             .unwrap_or(0);
 
         if start != 0 {
-            // For this stage, we only care about completing the command
             return Ok((pos, vec![]));
         }
 
@@ -108,9 +107,8 @@ impl Completer for ShellHelper {
         matches.sort();
         matches.dedup();
 
-        // No matches -> let rustyline ring bell (missing completion stage)
+        // No matches -> let rustyline ring bell
         if matches.is_empty() {
-            // reset multi state
             let mut st = self.state.borrow_mut();
             st.last_prefix = None;
             st.armed_for_list = false;
@@ -133,30 +131,29 @@ impl Completer for ShellHelper {
             ));
         }
 
-        // Multiple matches -> implement:
+        // Multiple matches behavior:
         // 1st TAB: bell only (return no candidates)
-        // 2nd TAB: show list (return candidates)
+        // 2nd TAB: return candidates so rustyline prints them
         let mut st = self.state.borrow_mut();
-        let prefix_s = prefix.to_string();
 
         if st.last_prefix.as_deref() == Some(prefix) && st.armed_for_list {
-            // SECOND TAB for same prefix -> return candidates so rustyline prints them
+            // Second TAB
             st.armed_for_list = false;
 
             let pairs: Vec<Pair> = matches
                 .into_iter()
                 .map(|m| Pair {
                     display: m.clone(),
-                    replacement: m, // don't change buffer; listing is what we want
+                    replacement: m, // don't change buffer
                 })
                 .collect();
 
-            return Ok((start, pairs));
+            Ok((start, pairs))
         } else {
-            // FIRST TAB for this prefix -> arm and return no candidates => bell
-            st.last_prefix = Some(prefix_s);
+            // First TAB
+            st.last_prefix = Some(prefix.to_string());
             st.armed_for_list = true;
-            return Ok((pos, vec![]));
+            Ok((pos, vec![]))
         }
     }
 }
@@ -201,13 +198,10 @@ fn find_executable_in_path(name: &str) -> Option<PathBuf> {
 }
 
 fn main() {
-    // Key part for #wh6:
-    // - CompletionType::List ensures listing behavior
-    // - show_all_if_ambiguous(true) makes rustyline print the list immediately
-    //   when we return multiple candidates (we do that on SECOND TAB only).
+    // Rustyline v17 uses completion_show_all_if_ambiguous
     let config = Config::builder()
         .completion_type(CompletionType::List)
-        .show_all_if_ambiguous(true)
+        .completion_show_all_if_ambiguous(true)
         .build();
 
     let mut rl: Editor<ShellHelper, DefaultHistory> = Editor::with_config(config).unwrap();
@@ -239,7 +233,6 @@ fn main() {
             let mut in_double = false;
             let mut backslash = false;
 
-            // In double quotes, backslash only escapes: \ " $ `
             let dq_escapable = ['\\', '"', '$', '`'];
 
             for ch in line.chars() {
@@ -360,7 +353,6 @@ fn main() {
             continue;
         }
 
-        // Create/open stderr file early if requested
         let mut stderr_file: Option<File> = match &stderr_redirect {
             StderrRedirect::Inherit => None,
             StderrRedirect::Truncate(path) => File::create(path).ok(),
@@ -462,18 +454,14 @@ fn main() {
             match &stdout_redirect {
                 StdoutRedirect::Inherit => {}
                 StdoutRedirect::Truncate(path) => match File::create(path) {
-                    Ok(f) => {
-                        command.stdout(Stdio::from(f));
-                    }
+                    Ok(f) => command.stdout(Stdio::from(f)),
                     Err(e) => {
                         write_err(&format!("{cmd}: {e}\n"));
                         continue;
                     }
                 },
                 StdoutRedirect::Append(path) => match OpenOptions::new().create(true).append(true).open(path) {
-                    Ok(f) => {
-                        command.stdout(Stdio::from(f));
-                    }
+                    Ok(f) => command.stdout(Stdio::from(f)),
                     Err(e) => {
                         write_err(&format!("{cmd}: {e}\n"));
                         continue;
@@ -484,18 +472,14 @@ fn main() {
             match &stderr_redirect {
                 StderrRedirect::Inherit => {}
                 StderrRedirect::Truncate(path) => match File::create(path) {
-                    Ok(f) => {
-                        command.stderr(Stdio::from(f));
-                    }
+                    Ok(f) => command.stderr(Stdio::from(f)),
                     Err(e) => {
                         write_err(&format!("{cmd}: {e}\n"));
                         continue;
                     }
                 },
                 StderrRedirect::Append(path) => match OpenOptions::new().create(true).append(true).open(path) {
-                    Ok(f) => {
-                        command.stderr(Stdio::from(f));
-                    }
+                    Ok(f) => command.stderr(Stdio::from(f)),
                     Err(e) => {
                         write_err(&format!("{cmd}: {e}\n"));
                         continue;
