@@ -34,6 +34,7 @@ name = "codecrafters-shell"
 version = "0.1.0"
 dependencies = [
  "is_executable",
+ "libc",
  "rustyline",
 ]
 
