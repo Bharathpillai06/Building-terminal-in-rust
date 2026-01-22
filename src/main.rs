@@ -1,13 +1,13 @@
 #[allow(unused_imports)]
 use std::env;
-use std::fs::{File, OpenOptions};
-use std::io::Write;
-use std::path::Path;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use is_executable::IsExecutable;
 
-// ---------- rustyline for TAB completion ----------
+// ---------- rustyline ----------
 use rustyline::completion::{Completer, Pair};
 use rustyline::error::ReadlineError;
 use rustyline::highlight::Highlighter;
@@ -30,8 +30,23 @@ enum StderrRedirect {
     Append(String),   // 2>>
 }
 
-// Completer for echo/exit only (this stage)
-struct ShellHelper;
+#[derive(Clone, Debug)]
+struct ShellHelper {
+    // For the "double-tab shows list" behavior
+    last_prefix: Option<String>,
+    last_was_tab_no_completion: bool,
+    tab_count_for_prefix: u8,
+}
+
+impl ShellHelper {
+    fn new() -> Self {
+        Self {
+            last_prefix: None,
+            last_was_tab_no_completion: false,
+            tab_count_for_prefix: 0,
+        }
+    }
+}
 
 impl Helper for ShellHelper {}
 
@@ -54,14 +69,12 @@ impl Completer for ShellHelper {
         pos: usize,
         _ctx: &Context<'_>,
     ) -> rustyline::Result<(usize, Vec<Pair>)> {
-        // Only complete the FIRST word (command position).
-        // Find start index of the current word.
+        // Only complete first token (command position)
         let start = line[..pos]
             .rfind(|c: char| c.is_whitespace())
             .map(|i| i + 1)
             .unwrap_or(0);
 
-        // If we're not on the first token, do nothing for this stage.
         if start != 0 {
             return Ok((pos, vec![]));
         }
@@ -71,55 +84,114 @@ impl Completer for ShellHelper {
             return Ok((pos, vec![]));
         }
 
-        let builtins = ["echo", "exit"];
-        let matches: Vec<&str> = builtins
-            .iter()
-            .copied()
-            .filter(|b| b.starts_with(prefix))
-            .collect();
+        let mut matches: Vec<String> = Vec::new();
 
+        // Builtins we support
+        let builtins = ["echo", "exit", "type", "pwd", "cd"];
+        for b in builtins {
+            if b.starts_with(prefix) {
+                matches.push(b.to_string());
+            }
+        }
+
+        // Executables in PATH
+        for exe in executables_in_path_starting_with(prefix) {
+            matches.push(exe);
+        }
+
+        matches.sort();
+        matches.dedup();
+
+        // If exactly one match, complete to it with a trailing space
         if matches.len() == 1 {
-            let m = matches[0];
-            // Must include trailing space so user can type args immediately.
+            let m = &matches[0];
             return Ok((
                 start,
                 vec![Pair {
-                    display: m.to_string(),
+                    display: m.clone(),
                     replacement: format!("{m} "),
                 }],
             ));
         }
 
-        Ok((pos, vec![]))
+        // If multiple matches, return them as completion candidates.
+        // We'll override display behavior in the readline loop (two-tab behavior).
+        let pairs: Vec<Pair> = matches
+            .into_iter()
+            .map(|m| Pair {
+                display: m.clone(),
+                replacement: m,
+            })
+            .collect();
+
+        Ok((start, pairs))
     }
+}
+
+// ---- helper: list matching executables in PATH (by filename) ----
+fn executables_in_path_starting_with(prefix: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let paths = match env::var_os("PATH") {
+        Some(p) => p,
+        None => return out,
+    };
+
+    for dir in env::split_paths(&paths) {
+        // PATH can include non-existent dirs, ignore errors
+        let Ok(entries) = fs::read_dir(&dir) else { continue };
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            if !path.is_executable() {
+                continue;
+            }
+
+            if let Some(name_os) = path.file_name() {
+                let name = name_os.to_string_lossy().to_string();
+                if name.starts_with(prefix) {
+                    out.push(name);
+                }
+            }
+        }
+    }
+
+    out
+}
+
+// ---- same executable finder you already use for running commands ----
+fn find_executable_in_path(name: &str) -> Option<PathBuf> {
+    let paths = env::var_os("PATH")?;
+    for dir in env::split_paths(&paths) {
+        let candidate = dir.join(name);
+        if candidate.is_file() && candidate.is_executable() {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 fn main() {
     let mut rl: Editor<ShellHelper, DefaultHistory> = Editor::new().unwrap();
-    rl.set_helper(Some(ShellHelper));
+    rl.set_helper(Some(ShellHelper::new()));
 
     loop {
+        // Read input line
         let line = match rl.readline("$ ") {
             Ok(l) => l,
-            Err(ReadlineError::Interrupted) => {
-                // Ctrl-C: show a new prompt
-                continue;
-            }
-            Err(ReadlineError::Eof) => {
-                // Ctrl-D: exit
-                break;
-            }
+            Err(ReadlineError::Interrupted) => continue, // Ctrl-C
+            Err(ReadlineError::Eof) => break,            // Ctrl-D
             Err(e) => {
                 eprintln!("readline error: {e}");
                 break;
             }
         };
 
-        // Save command in history (safe; doesn't affect stdout expectations)
+        // Save in history (harmless)
         let _ = rl.add_history_entry(line.as_str());
 
-        // IMPORTANT for gm9: Do NOT trim_end() here.
-        // The tester simulates TAB completion + typing args, and trimming can cause mismatch.
         if line.is_empty() {
             continue;
         }
@@ -128,12 +200,9 @@ fn main() {
         let parts: Vec<String> = {
             let mut args = Vec::new();
             let mut current = String::new();
-
             let mut in_single = false;
             let mut in_double = false;
             let mut backslash = false;
-
-            // In double quotes, backslash only escapes: \ " $ `
             let dq_escapable = ['\\', '"', '$', '`'];
 
             for ch in line.chars() {
@@ -183,11 +252,9 @@ fn main() {
             if backslash {
                 current.push('\\');
             }
-
             if !current.is_empty() {
                 args.push(current);
             }
-
             args
         };
 
@@ -257,20 +324,8 @@ fn main() {
         // Create/open stderr file early if requested (even if unused)
         let mut stderr_file: Option<File> = match &stderr_redirect {
             StderrRedirect::Inherit => None,
-            StderrRedirect::Truncate(path) => match File::create(path) {
-                Ok(f) => Some(f),
-                Err(e) => {
-                    eprintln!("{cmd}: {e}");
-                    None
-                }
-            },
-            StderrRedirect::Append(path) => match OpenOptions::new().create(true).append(true).open(path) {
-                Ok(f) => Some(f),
-                Err(e) => {
-                    eprintln!("{cmd}: {e}");
-                    None
-                }
-            },
+            StderrRedirect::Truncate(path) => File::create(path).ok(),
+            StderrRedirect::Append(path) => OpenOptions::new().create(true).append(true).open(path).ok(),
         };
 
         let mut write_err = |msg: &str| {
@@ -297,11 +352,9 @@ fn main() {
         if cmd == "echo" {
             let out = clean_args.join(" ");
             match &stdout_redirect {
-                StdoutRedirect::Inherit => {
-                    println!("{out}");
-                }
+                StdoutRedirect::Inherit => println!("{out}"),
                 StdoutRedirect::Truncate(path) => {
-                    if let Err(e) = std::fs::write(path, format!("{out}\n")) {
+                    if let Err(e) = fs::write(path, format!("{out}\n")) {
                         write_err(&format!("echo: {e}\n"));
                     }
                 }
@@ -343,7 +396,6 @@ fn main() {
                 continue;
             }
             let dest = clean_args[0].as_str();
-
             let target = if dest == "~" {
                 match env::home_dir() {
                     Some(h) => h,
@@ -390,7 +442,7 @@ fn main() {
                 },
             }
 
-            // stderr redirect (2> / 2>>)
+            // stderr redirect
             match &stderr_redirect {
                 StderrRedirect::Inherit => {}
                 StderrRedirect::Truncate(path) => match File::create(path) {
@@ -420,15 +472,4 @@ fn main() {
             println!("{cmd}: command not found");
         }
     }
-}
-
-fn find_executable_in_path(name: &str) -> Option<std::path::PathBuf> {
-    let paths = env::var_os("PATH")?;
-    for dir in env::split_paths(&paths) {
-        let candidate = dir.join(name);
-        if candidate.is_file() && candidate.is_executable() {
-            return Some(candidate);
-        }
-    }
-    None
 }
