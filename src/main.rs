@@ -10,8 +10,10 @@ use is_executable::IsExecutable;
 // ---------- rustyline for TAB completion ----------
 use rustyline::completion::{Completer, Pair};
 use rustyline::error::ReadlineError;
-use rustyline::history::DefaultHistory;
-use rustyline::{Context, Editor, Helper};
+use rustyline::hint::Hinter;
+use rustyline::highlight::Highlighter;
+use rustyline::validate::Validator;
+use rustyline::{Context, DefaultEditor, Helper};
 
 #[derive(Debug, Clone)]
 enum StdoutRedirect {
@@ -31,6 +33,14 @@ enum StderrRedirect {
 struct ShellHelper;
 
 impl Helper for ShellHelper {}
+impl Hinter for ShellHelper {
+    type Hint = String;
+    fn hint(&self, _line: &str, _pos: usize, _ctx: &Context<'_>) -> Option<Self::Hint> {
+        None
+    }
+}
+impl Highlighter for ShellHelper {}
+impl Validator for ShellHelper {}
 
 impl Completer for ShellHelper {
     type Candidate = Pair;
@@ -41,14 +51,13 @@ impl Completer for ShellHelper {
         pos: usize,
         _ctx: &Context<'_>,
     ) -> rustyline::Result<(usize, Vec<Pair>)> {
-        // Only handle completion at the first word (command position)
-        // Find start of current word
+        // Only complete the FIRST word (command position)
         let start = line[..pos]
             .rfind(|c: char| c.is_whitespace())
             .map(|i| i + 1)
             .unwrap_or(0);
 
-        // If we're not completing the first token, do nothing for this stage
+        // If we’re not on the first token, no completion in this stage
         if start != 0 {
             return Ok((pos, vec![]));
         }
@@ -67,12 +76,14 @@ impl Completer for ShellHelper {
 
         if matches.len() == 1 {
             let m = matches[0];
-            // Replacement includes trailing space as required by the stage
-            let pair = Pair {
-                display: m.to_string(),
-                replacement: format!("{m} "),
-            };
-            return Ok((start, vec![pair]));
+            // Must include trailing space per prompt
+            return Ok((
+                start,
+                vec![Pair {
+                    display: m.to_string(),
+                    replacement: format!("{m} "),
+                }],
+            ));
         }
 
         Ok((pos, vec![]))
@@ -81,12 +92,11 @@ impl Completer for ShellHelper {
 
 fn main() {
     // Use rustyline to support <TAB>
-    let mut rl = Editor::<ShellHelper, DefaultHistory>::new().unwrap();
+    let mut rl = DefaultEditor::new().unwrap();
     rl.set_helper(Some(ShellHelper));
 
     loop {
-        let readline = rl.readline("$ ");
-        let line = match readline {
+        let line = match rl.readline("$ ") {
             Ok(l) => l,
             Err(ReadlineError::Interrupted) => {
                 // Ctrl-C: show a new prompt
