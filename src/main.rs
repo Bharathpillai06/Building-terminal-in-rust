@@ -156,7 +156,6 @@ impl Completer for ShellHelper {
         matches.sort();
         matches.dedup();
 
-        // No matches -> bell by rustyline
         if matches.is_empty() {
             let mut st = self.state.borrow_mut();
             st.last_prefix = None;
@@ -164,7 +163,6 @@ impl Completer for ShellHelper {
             return Ok((pos, vec![]));
         }
 
-        // Exactly one match -> full completion + trailing space
         if matches.len() == 1 {
             let mut st = self.state.borrow_mut();
             st.last_prefix = None;
@@ -180,11 +178,8 @@ impl Completer for ShellHelper {
             ));
         }
 
-        // Multiple matches: try LCP completion first
         let lcp = longest_common_prefix(&matches);
-
         if lcp.len() > prefix.len() {
-            // Progress possible: replace with LCP
             let mut st = self.state.borrow_mut();
             st.last_prefix = None;
             st.armed_for_list = false;
@@ -198,8 +193,6 @@ impl Completer for ShellHelper {
             ));
         }
 
-        // No LCP progress:
-        // 1st TAB -> bell only, 2nd TAB -> list all matches
         let mut st = self.state.borrow_mut();
         if st.last_prefix.as_deref() == Some(prefix) && st.armed_for_list {
             st.armed_for_list = false;
@@ -208,7 +201,7 @@ impl Completer for ShellHelper {
                 .into_iter()
                 .map(|m| Pair {
                     display: m.clone(),
-                    replacement: m, // keep buffer unchanged
+                    replacement: m,
                 })
                 .collect();
 
@@ -424,46 +417,85 @@ fn is_builtin(cmd: &str) -> bool {
     matches!(cmd, "exit" | "echo" | "pwd" | "type" | "cd")
 }
 
-// ---------- single-command execution ----------
-fn run_builtin_in_parent(cmd: &str, args: &[String]) {
-    match cmd {
-        "echo" => {
-            println!("{}", args.join(" "));
+// ---------- builtin output routing (FIX for append stdout tests) ----------
+fn write_routed_output(
+    stdout_bytes: &[u8],
+    stderr_bytes: &[u8],
+    stdout_redir: &StdoutRedirect,
+    stderr_redir: &StderrRedirect,
+    cmd_name: &str,
+) {
+    // stderr
+    match stderr_redir {
+        StderrRedirect::Inherit => {
+            if !stderr_bytes.is_empty() {
+                let mut e = io::stderr();
+                let _ = e.write_all(stderr_bytes);
+                let _ = e.flush();
+            }
         }
+        _ => match open_for_stderr(stderr_redir) {
+            Ok(Some(mut f)) => {
+                let _ = f.write_all(stderr_bytes);
+                let _ = f.flush();
+            }
+            Ok(None) => {}
+            Err(e) => eprintln!("{cmd_name}: {e}"),
+        },
+    }
+
+    // stdout
+    match stdout_redir {
+        StdoutRedirect::Inherit => {
+            if !stdout_bytes.is_empty() {
+                let mut o = io::stdout();
+                let _ = o.write_all(stdout_bytes);
+                let _ = o.flush();
+            }
+        }
+        _ => match open_for_stdout(stdout_redir) {
+            Ok(Some(mut f)) => {
+                let _ = f.write_all(stdout_bytes);
+                let _ = f.flush();
+            }
+            Ok(None) => {}
+            Err(e) => eprintln!("{cmd_name}: {e}"),
+        },
+    }
+}
+
+fn run_builtin_capture_for_single(cmd: &str, args: &[String]) -> (Vec<u8>, Vec<u8>, i32) {
+    match cmd {
+        "echo" => (format!("{}\n", args.join(" ")).into_bytes(), vec![], 0),
         "pwd" => match env::current_dir() {
-            Ok(p) => println!("{}", p.display()),
-            Err(e) => eprintln!("pwd: {e}"),
+            Ok(p) => (format!("{}\n", p.display()).into_bytes(), vec![], 0),
+            Err(e) => (vec![], format!("pwd: {e}\n").into_bytes(), 1),
         },
         "type" => {
             if args.is_empty() {
-                eprintln!("type: missing operand");
-                return;
+                return (vec![], b"type: missing operand\n".to_vec(), 1);
             }
             let target = args[0].as_str();
             let builtins = ["exit", "echo", "type", "pwd", "cd"];
             if builtins.contains(&target) {
-                println!("{target} is a shell builtin");
+                (format!("{target} is a shell builtin\n").into_bytes(), vec![], 0)
             } else if let Some(p) = find_executable_in_path(target) {
-                println!("{target} is {}", p.display());
+                (format!("{target} is {}\n", p.display()).into_bytes(), vec![], 0)
             } else {
-                println!("{target} not found");
+                (format!("{target} not found\n").into_bytes(), vec![], 0)
             }
         }
-        _ => {}
+        _ => (vec![], vec![], 0),
     }
 }
 
 fn run_single_external(stage: &ParsedCommand) {
-    // Resolve executable: CodeCrafters expects PATH lookup behavior.
-    let exec_path = match find_executable_in_path(&stage.cmd) {
-        Some(_) => stage.cmd.clone(),
-        None => {
-            eprintln!("{}: command not found", stage.cmd);
-            return;
-        }
-    };
+    if find_executable_in_path(&stage.cmd).is_none() {
+        eprintln!("{}: command not found", stage.cmd);
+        return;
+    }
 
-    let mut cmd = Command::new(exec_path);
+    let mut cmd = Command::new(&stage.cmd);
     cmd.args(&stage.args);
 
     // stdout
@@ -515,16 +547,11 @@ fn run_single_external(stage: &ParsedCommand) {
     let _ = child.wait();
 }
 
-// ---------- STREAMING pipeline execution (this is the fix) ----------
+// ---------- STREAMING pipeline execution ----------
 fn execute_external_pipeline_streaming(stages: &[ParsedCommand]) {
-    // This stage (Dual-command pipeline) wants *real* pipes, not buffering.
-    // We'll support N-stage external pipelines in a streaming manner.
-
-    // Validate: external only
+    // External-only for now (builtins in pipelines are a later stage).
     for s in stages {
         if is_builtin(&s.cmd) {
-            // Not required for this stage; keep behavior simple.
-            // You can extend later for "Pipelines with built-ins".
             eprintln!("{}: pipeline with built-ins not supported yet", s.cmd);
             return;
         }
@@ -543,16 +570,14 @@ fn execute_external_pipeline_streaming(stages: &[ParsedCommand]) {
         let mut cmd = Command::new(&stage.cmd);
         cmd.args(&stage.args);
 
-        // stdin: from previous stage if present
+        // stdin
         if let Some(stdout) = prev_stdout.take() {
             cmd.stdin(Stdio::from(stdout));
         } else {
             cmd.stdin(Stdio::inherit());
         }
 
-        // stdout:
-        // - if not last: MUST be piped so next command can read it
-        // - if last: apply redirection (inherit/truncate/append)
+        // stdout
         if !is_last {
             cmd.stdout(Stdio::piped());
         } else {
@@ -569,7 +594,7 @@ fn execute_external_pipeline_streaming(stages: &[ParsedCommand]) {
             };
         }
 
-        // stderr: apply redirection always
+        // stderr
         match &stage.stderr {
             StderrRedirect::Inherit => cmd.stderr(Stdio::inherit()),
             _ => match open_for_stderr(&stage.stderr) {
@@ -590,7 +615,6 @@ fn execute_external_pipeline_streaming(stages: &[ParsedCommand]) {
             }
         };
 
-        // Capture stdout to feed next stage
         if !is_last {
             prev_stdout = child.stdout.take();
         }
@@ -598,14 +622,10 @@ fn execute_external_pipeline_streaming(stages: &[ParsedCommand]) {
         children.push(child);
     }
 
-    // IMPORTANT:
-    // Waiting on the last command first ensures pipelines like:
-    // tail -f file | head -n 5
-    // terminate when head exits (tail may then get SIGPIPE / exit).
+    // Wait last first (important for tail -f | head -n 5)
     if let Some(mut last) = children.pop() {
         let _ = last.wait();
     }
-    // Reap the rest
     for mut c in children {
         let _ = c.wait();
     }
@@ -651,7 +671,7 @@ fn main() {
             continue;
         }
 
-        // Parent-shell effects only for single command
+        // SINGLE COMMAND: apply parent effects + redirections for builtins
         if stages.len() == 1 {
             let s = &stages[0];
 
@@ -682,18 +702,17 @@ fn main() {
                 continue;
             }
 
-            // Other builtins
             if is_builtin(&s.cmd) {
-                run_builtin_in_parent(&s.cmd, &s.args);
+                let (out, err, _code) = run_builtin_capture_for_single(&s.cmd, &s.args);
+                write_routed_output(&out, &err, &s.stdout, &s.stderr, &s.cmd);
                 continue;
             }
 
-            // Single external
             run_single_external(s);
             continue;
         }
 
-        // PIPELINE (streaming) — this is what fixes Dual-command pipeline tests
+        // PIPELINE: streaming external pipeline (dual-command stage)
         execute_external_pipeline_streaming(&stages);
     }
 }
