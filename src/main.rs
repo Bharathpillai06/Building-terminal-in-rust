@@ -4,7 +4,14 @@ use std::env;
 use std::process::{Command, Stdio};
 use is_executable::IsExecutable;
 use std::path::Path;
-use std::fs::File;
+use std::fs::{File, OpenOptions};
+
+#[derive(Debug, Clone)]
+enum StdoutRedirect {
+    Inherit,
+    Truncate(String), // > or 1>
+    Append(String),   // >> or 1>>
+}
 
 fn main() {
     loop {
@@ -22,21 +29,26 @@ fn main() {
             continue;
         }
 
-        // ---------- tokenization ----------
+        // ---------- tokenization (quotes + backslash escaping) ----------
         let parts: Vec<String> = {
             let mut args = Vec::new();
             let mut current = String::new();
+
             let mut in_single = false;
             let mut in_double = false;
             let mut backslash = false;
+
+            // In double quotes, backslash only escapes: \ " $ `
             let dq_escapable = ['\\', '"', '$', '`'];
 
             for ch in line.chars() {
                 if backslash {
                     if in_single {
+                        // Backslash is literal inside single quotes
                         current.push('\\');
                         current.push(ch);
                     } else if in_double {
+                        // In double quotes, backslash only escapes specific chars
                         if dq_escapable.contains(&ch) {
                             current.push(ch);
                         } else {
@@ -44,6 +56,7 @@ fn main() {
                             current.push(ch);
                         }
                     } else {
+                        // Outside quotes, backslash escapes next char
                         current.push(ch);
                     }
                     backslash = false;
@@ -78,6 +91,7 @@ fn main() {
             if backslash {
                 current.push('\\');
             }
+
             if !current.is_empty() {
                 args.push(current);
             }
@@ -86,31 +100,43 @@ fn main() {
         };
 
         let cmd = parts[0].as_str();
+
         if cmd == "exit" {
             break;
         }
 
         // ---------- parse redirections ----------
         let mut clean_args: Vec<String> = Vec::new();
-        let mut stdout_path: Option<String> = None;
+        let mut stdout_redirect = StdoutRedirect::Inherit;
         let mut stderr_path: Option<String> = None;
 
         let mut i = 1;
+        let mut syntax_error = false;
+
         while i < parts.len() {
             match parts[i].as_str() {
                 ">" | "1>" => {
                     if i + 1 >= parts.len() {
-                        eprintln!("{cmd}: syntax error");
-                        clean_args.clear();
+                        eprintln!("{cmd}: syntax error near unexpected token `newline`");
+                        syntax_error = true;
                         break;
                     }
-                    stdout_path = Some(parts[i + 1].clone());
+                    stdout_redirect = StdoutRedirect::Truncate(parts[i + 1].clone());
+                    i += 2;
+                }
+                ">>" | "1>>" => {
+                    if i + 1 >= parts.len() {
+                        eprintln!("{cmd}: syntax error near unexpected token `newline`");
+                        syntax_error = true;
+                        break;
+                    }
+                    stdout_redirect = StdoutRedirect::Append(parts[i + 1].clone());
                     i += 2;
                 }
                 "2>" => {
                     if i + 1 >= parts.len() {
-                        eprintln!("{cmd}: syntax error");
-                        clean_args.clear();
+                        eprintln!("{cmd}: syntax error near unexpected token `newline`");
+                        syntax_error = true;
                         break;
                     }
                     stderr_path = Some(parts[i + 1].clone());
@@ -123,7 +149,11 @@ fn main() {
             }
         }
 
-        // create stderr file early (even if unused)
+        if syntax_error {
+            continue;
+        }
+
+        // Create stderr file early if requested (even if unused), matching tester behavior.
         let mut stderr_file: Option<File> = match &stderr_path {
             Some(p) => match File::create(p) {
                 Ok(f) => Some(f),
@@ -154,12 +184,27 @@ fn main() {
 
         if cmd == "echo" {
             let out = clean_args.join(" ");
-            if let Some(p) = &stdout_path {
-                if let Err(e) = std::fs::write(p, format!("{out}\n")) {
-                    write_err(&format!("echo: {e}\n"));
+            match &stdout_redirect {
+                StdoutRedirect::Inherit => {
+                    println!("{out}");
                 }
-            } else {
-                println!("{out}");
+                StdoutRedirect::Truncate(path) => {
+                    if let Err(e) = std::fs::write(path, format!("{out}\n")) {
+                        write_err(&format!("echo: {e}\n"));
+                    }
+                }
+                StdoutRedirect::Append(path) => {
+                    let mut f = match OpenOptions::new().create(true).append(true).open(path) {
+                        Ok(f) => f,
+                        Err(e) => {
+                            write_err(&format!("echo: {e}\n"));
+                            continue;
+                        }
+                    };
+                    if let Err(e) = writeln!(f, "{out}") {
+                        write_err(&format!("echo: {e}\n"));
+                    }
+                }
             }
             continue;
         }
@@ -209,20 +254,36 @@ fn main() {
             let mut command = Command::new(cmd);
             command.args(clean_args.iter());
 
-            if let Some(p) = &stdout_path {
-                match File::create(p) {
-                    Ok(f) => {
-                        command.stdout(Stdio::from(f));
+            // stdout redirect
+            match &stdout_redirect {
+                StdoutRedirect::Inherit => {}
+                StdoutRedirect::Truncate(path) => {
+                    match File::create(path) {
+                        Ok(f) => {
+                            command.stdout(Stdio::from(f));
+                        }
+                        Err(e) => {
+                            write_err(&format!("{cmd}: {e}\n"));
+                            continue;
+                        }
                     }
-                    Err(e) => {
-                        write_err(&format!("{cmd}: {e}\n"));
-                        continue;
+                }
+                StdoutRedirect::Append(path) => {
+                    match OpenOptions::new().create(true).append(true).open(path) {
+                        Ok(f) => {
+                            command.stdout(Stdio::from(f));
+                        }
+                        Err(e) => {
+                            write_err(&format!("{cmd}: {e}\n"));
+                            continue;
+                        }
                     }
                 }
             }
 
-            if let Some(p) = &stderr_path {
-                match File::create(p) {
+            // stderr redirect
+            if let Some(path) = &stderr_path {
+                match File::create(path) {
                     Ok(f) => {
                         command.stderr(Stdio::from(f));
                     }
@@ -234,6 +295,7 @@ fn main() {
             }
 
             if let Err(e) = command.status() {
+                // spawn/exec error from your shell: respect 2> too
                 write_err(&format!("{cmd}: {e}\n"));
             }
         } else {
