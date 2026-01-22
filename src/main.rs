@@ -1,10 +1,17 @@
 #[allow(unused_imports)]
-use std::io::{self, Write};
 use std::env;
-use std::process::{Command, Stdio};
-use is_executable::IsExecutable;
-use std::path::Path;
 use std::fs::{File, OpenOptions};
+use std::io::{self, Write};
+use std::path::Path;
+use std::process::{Command, Stdio};
+
+use is_executable::IsExecutable;
+
+// ---------- rustyline for TAB completion ----------
+use rustyline::completion::{Completer, Pair};
+use rustyline::error::ReadlineError;
+use rustyline::history::DefaultHistory;
+use rustyline::{Context, Editor, Helper};
 
 #[derive(Debug, Clone)]
 enum StdoutRedirect {
@@ -20,18 +27,82 @@ enum StderrRedirect {
     Append(String),   // 2>>
 }
 
-fn main() {
-    loop {
-        let mut input = String::new();
+// Completer for echo/exit only (this stage)
+struct ShellHelper;
 
-        print!("$ ");
-        io::stdout().flush().unwrap();
+impl Helper for ShellHelper {}
 
-        if io::stdin().read_line(&mut input).unwrap() == 0 {
-            break;
+impl Completer for ShellHelper {
+    type Candidate = Pair;
+
+    fn complete(
+        &self,
+        line: &str,
+        pos: usize,
+        _ctx: &Context<'_>,
+    ) -> rustyline::Result<(usize, Vec<Pair>)> {
+        // Only handle completion at the first word (command position)
+        // Find start of current word
+        let start = line[..pos]
+            .rfind(|c: char| c.is_whitespace())
+            .map(|i| i + 1)
+            .unwrap_or(0);
+
+        // If we're not completing the first token, do nothing for this stage
+        if start != 0 {
+            return Ok((pos, vec![]));
         }
 
-        let line = input.trim_end();
+        let prefix = &line[start..pos];
+        if prefix.is_empty() {
+            return Ok((pos, vec![]));
+        }
+
+        let builtins = ["echo", "exit"];
+        let matches: Vec<&str> = builtins
+            .iter()
+            .copied()
+            .filter(|b| b.starts_with(prefix))
+            .collect();
+
+        if matches.len() == 1 {
+            let m = matches[0];
+            // Replacement includes trailing space as required by the stage
+            let pair = Pair {
+                display: m.to_string(),
+                replacement: format!("{m} "),
+            };
+            return Ok((start, vec![pair]));
+        }
+
+        Ok((pos, vec![]))
+    }
+}
+
+fn main() {
+    // Use rustyline to support <TAB>
+    let mut rl = Editor::<ShellHelper, DefaultHistory>::new().unwrap();
+    rl.set_helper(Some(ShellHelper));
+
+    loop {
+        let readline = rl.readline("$ ");
+        let line = match readline {
+            Ok(l) => l,
+            Err(ReadlineError::Interrupted) => {
+                // Ctrl-C: show a new prompt
+                continue;
+            }
+            Err(ReadlineError::Eof) => {
+                // Ctrl-D: exit
+                break;
+            }
+            Err(e) => {
+                eprintln!("readline error: {e}");
+                break;
+            }
+        };
+
+        let line = line.trim_end();
         if line.is_empty() {
             continue;
         }
@@ -108,10 +179,6 @@ fn main() {
 
         let cmd = parts[0].as_str();
 
-        if cmd == "exit" {
-            break;
-        }
-
         // ---------- parse redirections ----------
         let mut clean_args: Vec<String> = Vec::new();
         let mut stdout_redirect = StdoutRedirect::Inherit;
@@ -169,8 +236,7 @@ fn main() {
             continue;
         }
 
-        // Create/open stderr file early if requested (even if unused),
-        // matching tester behavior: `echo "..." 2>> file` should create/append file.
+        // Create/open stderr file early if requested (even if unused)
         let mut stderr_file: Option<File> = match &stderr_redirect {
             StderrRedirect::Inherit => None,
             StderrRedirect::Truncate(path) => match File::create(path) {
@@ -198,6 +264,10 @@ fn main() {
         };
 
         // ---------- builtins ----------
+        if cmd == "exit" {
+            break;
+        }
+
         if cmd == "pwd" {
             match env::current_dir() {
                 Ok(p) => println!("{}", p.display()),
@@ -208,8 +278,6 @@ fn main() {
 
         if cmd == "echo" {
             let out = clean_args.join(" ");
-
-            // stdout redirection applies to builtin echo
             match &stdout_redirect {
                 StdoutRedirect::Inherit => {
                     println!("{out}");
@@ -242,7 +310,6 @@ fn main() {
             }
             let target = clean_args[0].as_str();
             let builtins = ["exit", "echo", "type", "pwd", "cd"];
-
             if builtins.contains(&target) {
                 println!("{target} is a shell builtin");
             } else if let Some(p) = find_executable_in_path(target) {
@@ -313,7 +380,6 @@ fn main() {
                         command.stderr(Stdio::from(f));
                     }
                     Err(e) => {
-                        // if redirect file can't be opened, report that error (respecting builtin stderr redirection if any)
                         write_err(&format!("{cmd}: {e}\n"));
                         continue;
                     }
@@ -330,7 +396,6 @@ fn main() {
             }
 
             if let Err(e) = command.status() {
-                // exec/spawn error from your shell: respect 2>/2>> too via write_err
                 write_err(&format!("{cmd}: {e}\n"));
             }
         } else {
