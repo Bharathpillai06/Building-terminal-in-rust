@@ -32,11 +32,11 @@ enum StderrRedirect {
     Append(String),   // 2>>
 }
 
-// State needed for "TAB then TAB" behavior
+// State for "TAB then TAB" behavior
 #[derive(Debug)]
 struct CompletionState {
     last_prefix: Option<String>,
-    armed_for_list: bool, // after first TAB with multiple matches
+    armed_for_list: bool,
 }
 
 struct ShellHelper {
@@ -55,14 +55,12 @@ impl ShellHelper {
 }
 
 impl Helper for ShellHelper {}
-
 impl Hinter for ShellHelper {
     type Hint = String;
     fn hint(&self, _line: &str, _pos: usize, _ctx: &Context<'_>) -> Option<Self::Hint> {
         None
     }
 }
-
 impl Highlighter for ShellHelper {}
 impl Validator for ShellHelper {}
 
@@ -75,7 +73,7 @@ impl Completer for ShellHelper {
         pos: usize,
         _ctx: &Context<'_>,
     ) -> rustyline::Result<(usize, Vec<Pair>)> {
-        // Only complete first token (command position)
+        // Only complete first token (command)
         let start = line[..pos]
             .rfind(|c: char| c.is_whitespace())
             .map(|i| i + 1)
@@ -90,9 +88,9 @@ impl Completer for ShellHelper {
             return Ok((pos, vec![]));
         }
 
-        // Collect builtin + executable matches
         let mut matches: Vec<String> = Vec::new();
 
+        // builtins
         let builtins = ["echo", "exit", "type", "pwd", "cd"];
         for b in builtins {
             if b.starts_with(prefix) {
@@ -100,6 +98,7 @@ impl Completer for ShellHelper {
             }
         }
 
+        // executables in PATH
         for exe in executables_in_path_starting_with(prefix) {
             matches.push(exe);
         }
@@ -107,7 +106,7 @@ impl Completer for ShellHelper {
         matches.sort();
         matches.dedup();
 
-        // No matches -> let rustyline ring bell
+        // No matches: let rustyline ring bell
         if matches.is_empty() {
             let mut st = self.state.borrow_mut();
             st.last_prefix = None;
@@ -115,7 +114,7 @@ impl Completer for ShellHelper {
             return Ok((pos, vec![]));
         }
 
-        // Exactly one match -> complete + trailing space
+        // One match: complete it + trailing space
         if matches.len() == 1 {
             let mut st = self.state.borrow_mut();
             st.last_prefix = None;
@@ -131,26 +130,23 @@ impl Completer for ShellHelper {
             ));
         }
 
-        // Multiple matches behavior:
+        // Multiple matches:
         // 1st TAB: bell only (return no candidates)
-        // 2nd TAB: return candidates so rustyline prints them
+        // 2nd TAB: return candidates so rustyline lists them
         let mut st = self.state.borrow_mut();
-
         if st.last_prefix.as_deref() == Some(prefix) && st.armed_for_list {
-            // Second TAB
             st.armed_for_list = false;
 
             let pairs: Vec<Pair> = matches
                 .into_iter()
                 .map(|m| Pair {
                     display: m.clone(),
-                    replacement: m, // don't change buffer
+                    replacement: m, // do not change buffer
                 })
                 .collect();
 
             Ok((start, pairs))
         } else {
-            // First TAB
             st.last_prefix = Some(prefix.to_string());
             st.armed_for_list = true;
             Ok((pos, vec![]))
@@ -182,7 +178,6 @@ fn executables_in_path_starting_with(prefix: &str) -> Vec<String> {
             }
         }
     }
-
     out
 }
 
@@ -198,7 +193,7 @@ fn find_executable_in_path(name: &str) -> Option<PathBuf> {
 }
 
 fn main() {
-    // Rustyline v17 uses completion_show_all_if_ambiguous
+    // rustyline v17: completion_show_all_if_ambiguous (NOT show_all_if_ambiguous)
     let config = Config::builder()
         .completion_type(CompletionType::List)
         .completion_show_all_if_ambiguous(true)
@@ -224,7 +219,7 @@ fn main() {
             continue;
         }
 
-        // ---------- tokenization (quotes + backslash escaping) ----------
+        // ---------- tokenize (quotes + backslash escaping) ----------
         let parts: Vec<String> = {
             let mut args = Vec::new();
             let mut current = String::new();
@@ -282,7 +277,6 @@ fn main() {
             if backslash {
                 current.push('\\');
             }
-
             if !current.is_empty() {
                 args.push(current);
             }
@@ -353,6 +347,7 @@ fn main() {
             continue;
         }
 
+        // stderr file for builtins errors if needed
         let mut stderr_file: Option<File> = match &stderr_redirect {
             StderrRedirect::Inherit => None,
             StderrRedirect::Truncate(path) => File::create(path).ok(),
@@ -451,17 +446,22 @@ fn main() {
             let mut command = Command::new(cmd);
             command.args(clean_args.iter());
 
+            // stdout redirect (FIXED: all arms return ())
             match &stdout_redirect {
                 StdoutRedirect::Inherit => {}
                 StdoutRedirect::Truncate(path) => match File::create(path) {
-                    Ok(f) => command.stdout(Stdio::from(f)),
+                    Ok(f) => {
+                        command.stdout(Stdio::from(f));
+                    }
                     Err(e) => {
                         write_err(&format!("{cmd}: {e}\n"));
                         continue;
                     }
                 },
                 StdoutRedirect::Append(path) => match OpenOptions::new().create(true).append(true).open(path) {
-                    Ok(f) => command.stdout(Stdio::from(f)),
+                    Ok(f) => {
+                        command.stdout(Stdio::from(f));
+                    }
                     Err(e) => {
                         write_err(&format!("{cmd}: {e}\n"));
                         continue;
@@ -469,17 +469,22 @@ fn main() {
                 },
             }
 
+            // stderr redirect (FIXED: all arms return ())
             match &stderr_redirect {
                 StderrRedirect::Inherit => {}
                 StderrRedirect::Truncate(path) => match File::create(path) {
-                    Ok(f) => command.stderr(Stdio::from(f)),
+                    Ok(f) => {
+                        command.stderr(Stdio::from(f));
+                    }
                     Err(e) => {
                         write_err(&format!("{cmd}: {e}\n"));
                         continue;
                     }
                 },
                 StderrRedirect::Append(path) => match OpenOptions::new().create(true).append(true).open(path) {
-                    Ok(f) => command.stderr(Stdio::from(f)),
+                    Ok(f) => {
+                        command.stderr(Stdio::from(f));
+                    }
                     Err(e) => {
                         write_err(&format!("{cmd}: {e}\n"));
                         continue;
